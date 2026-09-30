@@ -178,7 +178,10 @@ app.get('/api/debug', async (req, res) => {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': req.query.lang || 'en-US,en;q=0.9',
     'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
+    'Pragma': 'no-cache',
+    ...(req.query.xff && { 'X-Forwarded-For': req.query.xff }),
+    ...(req.query.tcip && { 'True-Client-IP': req.query.tcip }),
+    ...(req.query.cip && { 'Client-IP': req.query.cip })
   };
 
   try {
