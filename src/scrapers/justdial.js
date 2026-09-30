@@ -600,7 +600,29 @@ export async function searchJustdial(options = {}) {
 
   // 4. Exhaustive Multi-Area Harvesting Mode when limit > 50 or limit === 'max'
   if (isMaxLimit || maxLimit > 50) {
-    const areas = getCityAreas(resolution.city || city);
+    const initialAreas = getCityAreas(resolution.city || city);
+    const seenAreaSlugs = new Set(initialAreas.map(a => slugify(a)));
+    const areas = [...initialAreas];
+
+    const queueArea = (rawArea) => {
+      if (!rawArea) return;
+      const clean = String(rawArea).replace(/[^\w\s-]/g, '').trim();
+      if (!clean) return;
+      const s = slugify(clean);
+      if (s && s.length >= 3 && !seenAreaSlugs.has(s)) {
+        seenAreaSlugs.add(s);
+        areas.push(clean);
+      }
+      const words = clean.split(/\s+/);
+      if (words.length >= 3) {
+        const sub = slugify(words.slice(-2).join(' '));
+        if (sub && sub.length >= 3 && !seenAreaSlugs.has(sub)) {
+          seenAreaSlugs.add(sub);
+          areas.push(words.slice(-2).join(' '));
+        }
+      }
+    };
+
     const collectedDocids = new Set();
     const directLeads = [];
 
@@ -609,6 +631,7 @@ export async function searchJustdial(options = {}) {
       const basePage = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, 1, proxy);
       if (basePage.total > totalAvailable) totalAvailable = basePage.total;
       for (const lead of basePage.listings) {
+        queueArea(lead.area);
         const key = lead.docid || lead.phone || lead.name;
         if (!seenKeys.has(key)) {
           seenKeys.add(key);
@@ -625,7 +648,8 @@ export async function searchJustdial(options = {}) {
 
     // Concurrently harvest area endpoints to canvas the metropolitan area
     const areaBatchSize = 6;
-    for (let i = 0; i < areas.length; i += areaBatchSize) {
+    const maxAreasToCanvas = isMaxLimit ? 80 : 35;
+    for (let i = 0; i < areas.length && i < maxAreasToCanvas; i += areaBatchSize) {
       if (!isMaxLimit && collectedDocids.size >= Math.max(maxLimit * 2.5, 300)) break;
       const areaChunk = areas.slice(i, i + areaBatchSize);
       await Promise.all(areaChunk.map(async areaName => {
@@ -669,6 +693,8 @@ export async function searchJustdial(options = {}) {
               const name = getCol(row, 'name');
               const rawPhone = getCol(row, 'VNumber');
               const phone = cleanPhoneNumber(rawPhone);
+              const rowArea = getCol(row, 'area');
+              if (rowArea) queueArea(rowArea);
               const key = cleanDocid || (phone ? `p:${phone}` : null) || (name ? `n:${slugify(name)}` : null);
               if (key && !seenKeys.has(key)) {
                 seenKeys.add(key);
