@@ -189,12 +189,14 @@ app.get('/api/search', async (req, res) => {
   }
 
   try {
+    const isRelayed = req.headers['user-agent'] === 'Justdial-API-Gateway/1.0';
     const result = await searchJustdial({
       city,
       query,
       pages,
       limit,
-      proxy
+      proxy,
+      _relayed: isRelayed
     });
 
     res.json({
@@ -221,12 +223,14 @@ app.get('/api/export/csv', async (req, res) => {
   }
 
   try {
+    const isRelayed = req.headers['user-agent'] === 'Justdial-API-Gateway/1.0';
     const { results } = await searchJustdial({
       city,
       query,
       pages: pages || 3,
       limit: limit || 100,
-      proxy
+      proxy,
+      _relayed: isRelayed
     });
 
     const headers = [

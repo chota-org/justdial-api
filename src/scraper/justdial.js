@@ -96,6 +96,25 @@ function cleanPhoneNumber(rawPhone) {
 export async function resolveCategory(city, query, proxyUrl = null) {
   const citySlug = slugify(city);
   const querySlug = slugify(query);
+
+  if (process.env.RELAY_URL && !proxyUrl) {
+    try {
+      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/resolve?city=${encodeURIComponent(city)}&query=${encodeURIComponent(query)}`;
+      const relayResp = await fetch(relayUrl, {
+        headers: { 'ngrok-skip-browser-warning': 'true' },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (relayResp.ok) {
+        const json = await relayResp.json();
+        if (json.data && json.data.ncatid) {
+          return json.data;
+        }
+      }
+    } catch (e) {
+      console.warn(`[Resolve Relay Failed]: ${e.message}. Falling back.`);
+    }
+  }
+
   const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(querySlug)}`;
   const dispatcher = getDispatcher(proxyUrl);
 
@@ -234,6 +253,37 @@ export async function searchJustdial(options = {}) {
 
   const maxPages = Math.min(Math.max(1, parseInt(pages, 10) || 1), 10);
   const maxLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), 200);
+
+  if (process.env.RELAY_URL && !options._relayed && !proxy) {
+    try {
+      const relayParams = new URLSearchParams({
+        city,
+        query,
+        ...(pages && { pages }),
+        ...(limit && { limit })
+      });
+      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/search?${relayParams.toString()}`;
+      const relayResp = await fetch(relayUrl, {
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'User-Agent': 'Justdial-API-Gateway/1.0'
+        },
+        signal: AbortSignal.timeout(45000)
+      });
+      if (relayResp.ok) {
+        const json = await relayResp.json();
+        if (json.success && json.results) {
+          return {
+            query: json.query,
+            meta: json.meta,
+            results: json.results
+          };
+        }
+      }
+    } catch (e) {
+      console.warn(`[Search Relay Failed]: ${e.message}. Falling back to direct scraping.`);
+    }
+  }
 
   // 1. Resolve category & ncatid
   const resolution = await resolveCategory(city, query, proxy);
