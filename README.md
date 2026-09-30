@@ -44,10 +44,15 @@ GET /api/search?city={city}&query={query}&pages={pages}&limit={limit}
 | `query` | string | **Yes** | — | Business category or keyword (e.g. `Caterers`, `Solar-Panel-Dealers`, `Packers-And-Movers`) |
 | `pages` | number | No | `3` | Number of pages to paginate (1 to 10) |
 | `limit` | number | No | `50` | Maximum deduplicated leads to return (1 to 200) |
+| `api_key` | string | Conditional | — | API key (or pass via `x-api-key` header) if protection is enabled |
 
 #### Example Request:
 ```bash
-curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2&limit=20"
+# Using header
+curl -H "x-api-key: YOUR_KEY" "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2&limit=20"
+
+# Or using query parameter
+curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2&limit=20&api_key=YOUR_KEY"
 ```
 
 #### Example Response:
