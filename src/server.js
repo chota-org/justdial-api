@@ -25,9 +25,10 @@ function escapeCsv(val) {
 app.get('/', (req, res) => {
   res.json({
     name: 'Justdial REST API',
-    description: 'High-performance reverse-engineered Justdial business directory lead API',
-    version: '1.0.0',
+    description: 'High-performance reverse-engineered Justdial business directory lead API with unmasked phone numbers',
+    version: '1.1.0',
     status: 'online',
+    proxy_configured: !!(process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
     endpoints: {
       search: {
         method: 'GET',
@@ -36,7 +37,8 @@ app.get('/', (req, res) => {
           city: 'Required. City name (e.g. Mumbai, Delhi, Bangalore)',
           query: 'Required. Category or business keyword (e.g. Caterers, Solar-Panel-Dealers)',
           pages: 'Optional. Number of pages to scrape (1 to 10, default: 3)',
-          limit: 'Optional. Maximum leads to return (1 to 200, default: 50)'
+          limit: 'Optional. Maximum leads to return (1 to 200, default: 50)',
+          proxy: 'Optional. HTTP/HTTPS/SOCKS5 proxy URL for datacenter unblocking (e.g. http://user:pass@host:port)'
         },
         example: '/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2'
       },
@@ -46,7 +48,8 @@ app.get('/', (req, res) => {
         params: {
           city: 'Required. City name',
           query: 'Required. Category or business keyword',
-          pages: 'Optional. Number of pages (default: 3)'
+          pages: 'Optional. Number of pages (default: 3)',
+          proxy: 'Optional. Proxy URL'
         },
         example: '/api/export/csv?city=Delhi&query=Caterers&pages=2'
       },
@@ -55,7 +58,8 @@ app.get('/', (req, res) => {
         path: '/api/resolve',
         params: {
           city: 'City name',
-          query: 'Category keyword'
+          query: 'Category keyword',
+          proxy: 'Optional. Proxy URL'
         },
         example: '/api/resolve?city=Bangalore&query=Packers-And-Movers'
       },
@@ -72,13 +76,14 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    proxy_configured: !!(process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY)
   });
 });
 
 // Resolve category & ncatid
 app.get('/api/resolve', async (req, res) => {
-  const { city, query } = req.query;
+  const { city, query, proxy } = req.query;
   if (!city || !query) {
     return res.status(400).json({
       success: false,
@@ -87,7 +92,7 @@ app.get('/api/resolve', async (req, res) => {
   }
 
   try {
-    const meta = await resolveCategory(city, query);
+    const meta = await resolveCategory(city, query, proxy);
     res.json({
       success: true,
       data: meta
@@ -102,7 +107,7 @@ app.get('/api/resolve', async (req, res) => {
 
 // Primary Search API endpoint
 app.get('/api/search', async (req, res) => {
-  const { city, query, pages, limit } = req.query;
+  const { city, query, pages, limit, proxy } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -116,7 +121,8 @@ app.get('/api/search', async (req, res) => {
       city,
       query,
       pages,
-      limit
+      limit,
+      proxy
     });
 
     res.json({
@@ -133,7 +139,7 @@ app.get('/api/search', async (req, res) => {
 
 // Export directly as CSV download
 app.get('/api/export/csv', async (req, res) => {
-  const { city, query, pages, limit } = req.query;
+  const { city, query, pages, limit, proxy } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -147,7 +153,8 @@ app.get('/api/export/csv', async (req, res) => {
       city,
       query,
       pages: pages || 3,
-      limit: limit || 100
+      limit: limit || 100,
+      proxy
     });
 
     const headers = [

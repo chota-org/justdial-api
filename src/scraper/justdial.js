@@ -2,7 +2,10 @@
  * Reverse-Engineered Justdial Scraper Engine
  * Uses Server-Side Rendered (SSR) Next.js __NEXT_DATA__ endpoints with canonical NCT resolution
  * Extracts unmasked phone numbers, ratings, addresses, and business details without a browser.
+ * Supports HTTP/HTTPS/SOCKS proxies via undici ProxyAgent.
  */
+
+import { ProxyAgent } from 'undici';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -37,6 +40,19 @@ function slugify(text) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Global cache for ProxyAgent instances to reuse connections
+const proxyAgents = new Map();
+
+function getDispatcher(proxyUrl) {
+  const targetProxy = proxyUrl || process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+  if (!targetProxy) return undefined;
+
+  if (!proxyAgents.has(targetProxy)) {
+    proxyAgents.set(targetProxy, new ProxyAgent(targetProxy));
+  }
+  return proxyAgents.get(targetProxy);
 }
 
 /**
@@ -77,14 +93,23 @@ function cleanPhoneNumber(rawPhone) {
 /**
  * Step 1: Resolves category query to canonical search term and ncatid
  */
-export async function resolveCategory(city, query) {
+export async function resolveCategory(city, query, proxyUrl = null) {
   const citySlug = slugify(city);
   const querySlug = slugify(query);
   const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(querySlug)}`;
+  const dispatcher = getDispatcher(proxyUrl);
 
-  const res = await fetch(url, { headers: getHeaders(), redirect: 'follow' });
+  const fetchOptions = {
+    headers: getHeaders(),
+    redirect: 'follow'
+  };
+  if (dispatcher) {
+    fetchOptions.dispatcher = dispatcher;
+  }
+
+  const res = await fetch(url, fetchOptions);
   if (!res.ok) {
-    throw new Error(`Failed to resolve category at ${url} (HTTP ${res.status})`);
+    throw new Error(`Failed to resolve category at ${url} (HTTP ${res.status}). If running in a datacenter (like AWS/Render US), configure a residential or Indian proxy via PROXY_URL.`);
   }
 
   const html = await res.text();
@@ -107,12 +132,21 @@ export async function resolveCategory(city, query) {
 /**
  * Step 2: Fetches single page of listings via canonical NCT endpoint
  */
-export async function fetchNctPage(city, search, ncatid, page = 1) {
+export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = null) {
   const citySlug = slugify(city);
   const searchSlug = slugify(search);
   const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(searchSlug)}/nct-${ncatid}?page=${page}`;
+  const dispatcher = getDispatcher(proxyUrl);
 
-  const res = await fetch(url, { headers: getHeaders(), redirect: 'follow' });
+  const fetchOptions = {
+    headers: getHeaders(),
+    redirect: 'follow'
+  };
+  if (dispatcher) {
+    fetchOptions.dispatcher = dispatcher;
+  }
+
+  const res = await fetch(url, fetchOptions);
   if (!res.ok) {
     throw new Error(`Failed to fetch NCT page ${page} at ${url} (HTTP ${res.status})`);
   }
@@ -190,7 +224,8 @@ export async function searchJustdial(options = {}) {
     query,
     pages = 3,
     limit = 50,
-    delayMs = 400
+    delayMs = 400,
+    proxy = null
   } = options;
 
   if (!city || !query) {
@@ -201,7 +236,7 @@ export async function searchJustdial(options = {}) {
   const maxLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), 200);
 
   // 1. Resolve category & ncatid
-  const resolution = await resolveCategory(city, query);
+  const resolution = await resolveCategory(city, query, proxy);
   if (!resolution.ncatid) {
     throw new Error(`Could not resolve a valid category ID (ncatid) for "${query}" in "${city}".`);
   }
@@ -213,7 +248,7 @@ export async function searchJustdial(options = {}) {
   // 2. Fetch pages
   for (let p = 1; p <= maxPages; p++) {
     try {
-      const pageData = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, p);
+      const pageData = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, p, proxy);
       if (pageData.total > totalAvailable) {
         totalAvailable = pageData.total;
       }
