@@ -1,7 +1,7 @@
 // TradeIndia Scraper: High-density B2B suppliers, manufacturers and exporters
 // Extracts Next.js SSR state (__NEXT_DATA__) with 28 listings per page.
 
-import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail } from '../utils/normalizer.js';
 
 export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
   const normCity = normalizeCity(city);
@@ -58,12 +58,15 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
       const whatsapp = isMobile ? phone : '';
       const whatsapp_link = whatsapp ? `https://wa.me/91${whatsapp}` : '';
 
+      const rawEmail = item.email || item.company_email || item.user_email || '';
+      const email = cleanEmail(rawEmail);
+
       leads.push({
         name,
         phone,
         whatsapp,
         whatsapp_link,
-        email: 'N/A',
+        email,
         source: 'tradeindia',
         rating: item.rating ? parseFloat(item.rating) : null,
         reviews: null,
@@ -94,9 +97,12 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
 }
 
 export async function searchTradeIndia({ city = '', query, page, pages, limit = 50 }) {
+  const startTime = Date.now();
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
-  const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
+  const targetLimit = isMaxLimit ? 1000 : Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   if (page !== undefined && page !== null && page !== '') {
     const singlePage = Math.max(parseInt(page, 10) || 1, 1);
@@ -107,20 +113,23 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
       query: cleanQ,
       page: singlePage,
       total_results: leads.length,
+      execution_time_ms: Date.now() - startTime,
       results: leads.slice(0, targetLimit)
     };
   }
 
   // 28 leads per page
   const neededPages = pages
-    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 10)
-    : Math.min(Math.ceil(targetLimit / 28), 10);
+    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 50)
+    : (isMaxLimit ? 30 : Math.min(Math.ceil(targetLimit / 28), 30));
 
   const allLeads = [];
   const seenNames = new Set();
+  let pagesFetched = 0;
 
   for (let p = 1; p <= neededPages; p++) {
     try {
+      pagesFetched++;
       const { leads } = await scrapeTradeIndiaPage({ city: normCity, query: cleanQ, page: p });
       if (leads.length === 0) break;
 
@@ -146,8 +155,10 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
     source: 'tradeindia',
     city: normCity,
     query: cleanQ,
-    total_pages_fetched: neededPages,
+    total_pages_fetched: pagesFetched,
     total_results: allLeads.length,
+    execution_time_ms: Date.now() - startTime,
     results: allLeads
   };
 }
+

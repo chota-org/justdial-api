@@ -76,7 +76,8 @@ Every lead returned by the API—regardless of which platform or platforms it or
   "phone": "9999577392",
   "whatsapp": "9999577392",
   "whatsapp_link": "https://wa.me/919999577392",
-  "email": "N/A",
+  "email": "sonycaterers@gmail.com",
+  "contact_person": "Mr. Rajiv Sony (Proprietor)",
   "sources": ["grotal", "justdial"],
   "primary_source": "grotal",
   "rating": 4.5,
@@ -100,7 +101,8 @@ Every lead returned by the API—regardless of which platform or platforms it or
 | `phone` | `string` | Cleaned 10-digit primary phone number without country code or spaces. |
 | `whatsapp` | `string` | Direct WhatsApp-compatible number (identical to mobile phone). |
 | `whatsapp_link`| `string` | Direct URL format (`https://wa.me/91{phone}`) for 1-click dispatch. |
-| `email` | `string` | Merchant contact email if published, or `'N/A'`. |
+| `email` | `string \| null` | Verified merchant email address extracted from SSR detail profiles, or `null`. |
+| `contact_person`| `string \| null` | Name and designation of the business owner, proprietor, or manager. |
 | `sources` | `string[]` | Array of platforms where this merchant was verified. |
 | `primary_source`| `string` | Platform that provided the initial or highest-fidelity record. |
 | `rating` | `number \| null` | Aggregate customer rating score (e.g. `4.5` out of 5). |
@@ -113,6 +115,7 @@ Every lead returned by the API—regardless of which platform or platforms it or
 | `verified` | `boolean` | Trust status (e.g., IndiaMART TrustSEAL, Justdial Verified, Grotal Verified). |
 | `categories` | `string[]` | Business categories or goods dealt in. |
 | `url` | `string` | Source directory listing profile URL. |
+
 
 ---
 
@@ -216,10 +219,13 @@ The primary lead generation endpoint. Queries either all platforms simultaneousl
 | `city` | `string` | **Yes** | — | Target city (e.g. `Delhi`, `Mumbai`, `Bangalore`, `Pune`, `Jaipur`, `Ahmedabad`, `Kolkata`, `Hyderabad`, `Chennai`) |
 | `query` | `string` | **Yes** | — | Category or keyword (e.g. `Caterers`, `solar panel`, `pet-shop`, `packers and movers`) |
 | `source` | `string` | No | `all` | Platform selector: `all`, `justdial`, `grotal`, `indiamart`, `tradeindia`, `sulekha`, or comma-separated list (`grotal,indiamart`) |
-| `limit` | `number` | No | `50` | Maximum deduplicated leads to return (1 to 200). Auto-paginates upstream pages to fulfill requested quota. |
-| `page` | `number` | No | `1` | Specific single page number to fetch (disables auto-pagination). |
-| `pages` | `number` | No | Auto | Explicit number of pages to iterate per platform (1 to 10). |
+| `limit` | `number \| string`| No | `50` | Maximum deduplicated leads to return: integer (1 to 1000) or `"max"` / `"all"` to extract the maximum directory capacity. Auto-paginates upstream pages to fulfill requested quota. |
 | `has_phone` | `boolean` | No | `false` | When `true`, filters results to only return leads with a verified 10-digit phone number. |
+| `has_email` | `boolean` | No | `false` | When `true`, filters results to only return leads with a verified merchant email address. |
+| `has_contact` | `boolean` | No | `false` | Mutually exclusive contact filter: when `true`, returns leads having **either** a valid phone OR an email address. |
+| `enrich_emails`| `boolean` | No | `true` | Concurrently fetches merchant SSR detail profiles on Justdial and Sulekha to enrich listings with direct emails and contact persons. |
+| `page` | `number` | No | `1` | Specific single page number to fetch (disables auto-pagination). |
+| `pages` | `number` | No | Auto | Explicit number of pages to iterate per platform (1 to 50). |
 | `has_whatsapp` | `boolean` | No | `false` | When `true`, filters results to only return leads with WhatsApp capability. |
 | `verified` | `boolean` | No | `false` | When `true`, returns only verified/TrustSEAL merchants. |
 | `min_rating` | `number` | No | — | Minimum customer review score filter (e.g. `4.0`). |
@@ -227,68 +233,64 @@ The primary lead generation endpoint. Queries either all platforms simultaneousl
 #### Request Example:
 ```bash
 curl -s -H "x-api-key: jd_sec_9b2e71f4" \
-  "https://justdial-api.onrender.com/api/search?city=Delhi&query=caterers&source=all&limit=20"
+  "https://justdial-api.onrender.com/api/search?city=Hyderabad&query=pet%20shops&source=all&limit=max"
 ```
 
 #### Response Example (`200 OK`):
 ```json
 {
   "success": true,
-  "city": "Delhi",
-  "query": "caterers",
+  "city": "Hyderabad",
+  "query": "pet shops",
+  "original_query": "pet shops",
+  "intent": "local_services",
+  "benchmark": {
+    "total_duration_ms": 28209,
+    "limit_requested": "max",
+    "limit_applied": "max",
+    "sources": {
+      "indiamart": { "success": true, "count": 6, "duration_ms": 694 },
+      "grotal": { "success": true, "count": 37, "duration_ms": 1138 },
+      "tradeindia": { "success": true, "count": 84, "duration_ms": 2292 },
+      "sulekha": { "success": true, "count": 92, "duration_ms": 9013 },
+      "justdial": { "success": true, "count": 32, "duration_ms": 28086 }
+    }
+  },
   "requested_sources": ["grotal", "indiamart", "justdial", "tradeindia", "sulekha"],
   "sources_status": {
-    "grotal": { "success": true, "count": 6 },
-    "indiamart": { "success": true, "count": 5 },
-    "justdial": { "success": true, "count": 5 },
-    "tradeindia": { "success": true, "count": 4 },
-    "sulekha": { "success": true, "count": 0 }
+    "grotal": { "success": true, "count": 37, "duration_ms": 1138 },
+    "indiamart": { "success": true, "count": 6, "duration_ms": 694 },
+    "tradeindia": { "success": true, "count": 84, "duration_ms": 2292 },
+    "sulekha": { "success": true, "count": 92, "duration_ms": 9013 },
+    "justdial": { "success": true, "count": 32, "duration_ms": 28086 }
   },
-  "total_deduplicated": 20,
+  "total_deduplicated": 250,
   "results": [
     {
-      "name": "Puri Tent and Caterers",
-      "phone": "9871004420",
-      "whatsapp": "9871004420",
-      "whatsapp_link": "https://wa.me/919871004420",
-      "email": "N/A",
-      "sources": ["grotal"],
-      "primary_source": "grotal",
-      "rating": null,
-      "reviews": 0,
-      "address": "Karol Bagh, Delhi, Delhi",
-      "area": "Karol Bagh",
-      "city": "Delhi",
-      "pincode": "",
-      "website": "",
-      "verified": true,
-      "categories": ["caterers"],
-      "url": "https://www.grotal.com/Delhi/Caterers-C44A0P1A0/"
-    },
-    {
-      "name": "Aggarwal Sweets & Bakers",
-      "phone": "8511347623",
-      "whatsapp": "8511347623",
-      "whatsapp_link": "https://wa.me/918511347623",
-      "email": "N/A",
+      "name": "Ammu's Pets & Kennels",
+      "phone": "8197688953",
+      "whatsapp": "8197688953",
+      "whatsapp_link": "https://wa.me/918197688953",
+      "email": "ammukennels@gmail.com",
+      "contact_person": "Mr Mohammad Moin Uddin (Proprietor)",
       "sources": ["justdial"],
       "primary_source": "justdial",
-      "rating": 3.9,
-      "reviews": 360,
-      "address": "Near Jaipuria Mall Indirapuram",
-      "area": "Jaipuria Sunrise Plaza Indirapuram",
-      "city": "delhi",
-      "pincode": "201014",
-      "website": "",
+      "rating": 4.5,
+      "reviews": 38,
+      "address": "Opposite Pillar No 141 Attapur, Hyderabad",
+      "area": "Attapur",
+      "city": "Hyderabad",
+      "pincode": "500048",
+      "website": "https://ammupets.com",
       "verified": true,
-      "categories": ["Caterers", "Caterers For Wedding"],
-      "url": "https://www.justdial.com/Ghaziabad/Aggarwal-Sweets-Bakers-Near-Jaipuria-Mall-Indirapuram/011PXX11-XX11-140519145926-K1R5_BZDET"
+      "categories": ["Pet Shops", "Dog Breeders"],
+      "url": "https://www.justdial.com/Hyderabad/Ammus-Pets-Kennels-Attapur/040PXX40-XX40-190117180025-Q1W8_BZDET"
     }
   ]
-}
 ```
 
 ---
+
 
 ### 5.4 Single-Platform Search Shortcuts
 Direct routes targeting specific directories without touching other scrapers:
@@ -328,17 +330,19 @@ Content-Disposition: attachment; filename="delhi_caterers_all_leads.csv"
 3. `WhatsApp`
 4. `WhatsApp_Link`
 5. `Email`
-6. `Source`
-7. `Rating`
-8. `Reviews`
-9. `Address`
-10. `Area`
-11. `City`
-12. `Pincode`
-13. `Website`
-14. `Verified`
-15. `Categories`
-16. `URL`
+6. `Contact_Person`
+7. `Source`
+8. `Rating`
+9. `Reviews`
+10. `Address`
+11. `Area`
+12. `City`
+13. `Pincode`
+14. `Website`
+15. `Verified`
+16. `Categories`
+17. `URL`
+
 
 #### Example Request:
 ```bash

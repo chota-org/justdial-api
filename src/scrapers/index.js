@@ -55,7 +55,7 @@ export const SOURCES = {
   }
 };
 
-import { sanitizeQuery, normalizeCity, cleanPhone, detectIntent } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, detectIntent } from '../utils/normalizer.js';
 
 /**
  * Execute search for a single designated source
@@ -89,6 +89,7 @@ export async function searchSingleSource(source, options) {
  * Execute concurrent search across multiple sources with smart deduplication and cross-enrichment
  */
 export async function searchAllSources(options = {}) {
+  const startTime = Date.now();
   const {
     city,
     query,
@@ -101,10 +102,13 @@ export async function searchAllSources(options = {}) {
     relay = null,
     _relayed = false,
     has_phone = false,
+    has_email = false,
+    has_contact = false,
     only_contacts = false,
     has_whatsapp = false,
     verified_only = false,
-    min_rating = null
+    min_rating = null,
+    enrich_emails = true
   } = options;
 
   if (!city || !query) {
@@ -113,7 +117,9 @@ export async function searchAllSources(options = {}) {
 
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
-  const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
+  const targetLimit = isMaxLimit ? 1000 : Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   // Parse requested source list
   let sourceList = [];
@@ -132,9 +138,12 @@ export async function searchAllSources(options = {}) {
     validSources.push('grotal', 'indiamart', 'justdial');
   }
 
-  // Execute all scrapers concurrently
-  const sourceLimit = Math.ceil(targetLimit * 1.2 / validSources.length);
+  // Determine per-source limit
+  const sourceLimit = isMaxLimit ? 'max' : Math.ceil(targetLimit * 1.2 / validSources.length);
+
+  // Execute all scrapers concurrently with individual benchmarking timers
   const tasks = validSources.map(src => {
+    const srcStart = Date.now();
     return searchSingleSource(src, {
       city: normCity,
       query: cleanQ,
@@ -143,14 +152,18 @@ export async function searchAllSources(options = {}) {
       pages,
       proxy,
       relay,
-      _relayed
+      _relayed,
+      enrich_emails,
+      has_email
     }).then(res => ({
       source: src,
       success: true,
+      duration_ms: Date.now() - srcStart,
       data: res.results || []
     })).catch(err => ({
       source: src,
       success: false,
+      duration_ms: Date.now() - srcStart,
       error: err.message,
       data: []
     }));
@@ -159,22 +172,34 @@ export async function searchAllSources(options = {}) {
   const responses = await Promise.all(tasks);
 
   // Merge and deduplicate results
-  const leadMap = new Map(); // Key: 10-digit phone or normalized name
+  // Mutually exclusive deduplication: primary key is 10-digit phone, secondary is verified email, tertiary is normalized name+city
+  const leadMap = new Map();
   const sourceStats = {};
 
   for (const resp of responses) {
     sourceStats[resp.source] = {
       success: resp.success,
       count: resp.data.length,
+      duration_ms: resp.duration_ms,
       ...(resp.error && { error: resp.error })
     };
 
     for (const item of resp.data) {
       const phone = cleanPhone(item.phone);
+      const email = cleanEmail(item.email);
       const nameKey = (item.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-      const dedupKey = phone && phone.length === 10 ? `p:${phone}` : `n:${nameKey}`;
+      const cityKey = (item.city || normCity || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 
-      if (!dedupKey || dedupKey === 'n:') continue;
+      let dedupKey;
+      if (phone && phone.length === 10) {
+        dedupKey = `p:${phone}`;
+      } else if (email) {
+        dedupKey = `e:${email}`;
+      } else if (nameKey) {
+        dedupKey = `n:${nameKey}_${cityKey}`;
+      }
+
+      if (!dedupKey || dedupKey.startsWith('n:_')) continue;
 
       if (!leadMap.has(dedupKey)) {
         leadMap.set(dedupKey, {
@@ -182,14 +207,15 @@ export async function searchAllSources(options = {}) {
           phone: phone || item.phone || '',
           whatsapp: phone && phone.length === 10 ? phone : (item.whatsapp || ''),
           whatsapp_link: phone && phone.length === 10 ? `https://wa.me/91${phone}` : (item.whatsapp_link || ''),
-          email: item.email || 'N/A',
+          email: email || null,
+          contact_person: item.contact_person || null,
           sources: [item.source || resp.source],
           primary_source: item.source || resp.source,
           rating: item.rating || null,
           reviews: item.reviews || 0,
           address: item.address || '',
           area: item.area || '',
-          city: item.city || city,
+          city: item.city || normCity,
           pincode: item.pincode || '',
           website: item.website || '',
           verified: !!item.verified,
@@ -206,6 +232,12 @@ export async function searchAllSources(options = {}) {
           existing.phone = phone;
           existing.whatsapp = phone;
           existing.whatsapp_link = `https://wa.me/91${phone}`;
+        }
+        if (!existing.email && email) {
+          existing.email = email;
+        }
+        if (!existing.contact_person && item.contact_person) {
+          existing.contact_person = item.contact_person;
         }
         if (!existing.website && item.website) {
           existing.website = item.website;
@@ -234,8 +266,15 @@ export async function searchAllSources(options = {}) {
 
   let filteredLeads = Array.from(leadMap.values());
 
-  if (has_phone || only_contacts) {
+  // Contact filtering options (phone and email can be mutually exclusive)
+  if (has_phone) {
     filteredLeads = filteredLeads.filter(l => l.phone && l.phone.length === 10);
+  }
+  if (has_email) {
+    filteredLeads = filteredLeads.filter(l => l.email && l.email.includes('@'));
+  }
+  if (has_contact || only_contacts) {
+    filteredLeads = filteredLeads.filter(l => (l.phone && l.phone.length === 10) || (l.email && l.email.includes('@')));
   }
   if (has_whatsapp) {
     filteredLeads = filteredLeads.filter(l => l.whatsapp && l.whatsapp.length === 10);
@@ -248,11 +287,11 @@ export async function searchAllSources(options = {}) {
     filteredLeads = filteredLeads.filter(l => (l.rating || 0) >= minR);
   }
 
-  // Sort leads: verified & phone-ready first, then by rating
+  // Sort leads: leads with active contact (phone OR email) prioritized first, then verified, then highest rating
   const mergedLeads = filteredLeads.sort((a, b) => {
-    const aHasPhone = a.phone && a.phone.length === 10 ? 1 : 0;
-    const bHasPhone = b.phone && b.phone.length === 10 ? 1 : 0;
-    if (aHasPhone !== bHasPhone) return bHasPhone - aHasPhone;
+    const aHasContact = (a.phone && a.phone.length === 10) || a.email ? 1 : 0;
+    const bHasContact = (b.phone && b.phone.length === 10) || b.email ? 1 : 0;
+    if (aHasContact !== bHasContact) return bHasContact - aHasContact;
 
     const aVerified = a.verified ? 1 : 0;
     const bVerified = b.verified ? 1 : 0;
@@ -261,13 +300,20 @@ export async function searchAllSources(options = {}) {
     return (b.rating || 0) - (a.rating || 0);
   });
 
-  const finalResults = mergedLeads.slice(0, targetLimit);
+  const finalResults = isMaxLimit ? mergedLeads : mergedLeads.slice(0, targetLimit);
+  const totalDurationMs = Date.now() - startTime;
 
   return {
     city: normCity,
     query: cleanQ,
     original_query: query,
     intent,
+    benchmark: {
+      total_duration_ms: totalDurationMs,
+      limit_requested: limit || 50,
+      limit_applied: isMaxLimit ? 'max' : targetLimit,
+      sources: sourceStats
+    },
     requested_sources: validSources,
     sources_status: sourceStats,
     total_deduplicated: finalResults.length,
@@ -283,3 +329,4 @@ export {
   searchTradeIndia,
   searchSulekha
 };
+

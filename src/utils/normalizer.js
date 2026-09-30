@@ -122,3 +122,27 @@ export function detectIntent(rawQuery) {
   if (serviceKeywords.some(k => q.includes(k))) return 'local_services';
   return 'general';
 }
+
+/**
+ * Validates and extracts merchant email, filtering out platform system/support emails
+ */
+export function cleanEmail(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const emails = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+  if (!emails || emails.length === 0) return null;
+
+  const ignoredDomains = [
+    'justdial.com', 'tradeindia.com', 'indiamart.com', 'sulekha.com', 'grotal.com',
+    'example.com', 'wix.com', 'wordpress.com', 'domain.com', 'sentry.io'
+  ];
+
+  const valid = emails
+    .map(e => e.trim().toLowerCase())
+    .filter(e => {
+      const domain = e.split('@')[1];
+      return domain && !ignoredDomains.includes(domain);
+    });
+
+  return valid.length > 0 ? valid[0] : null;
+}
+

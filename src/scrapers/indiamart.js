@@ -73,7 +73,7 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
       phone: phone || rawContact,
       whatsapp: phone.length === 10 ? phone : '',
       whatsapp_link: phone.length === 10 ? `https://wa.me/91${phone}` : '',
-      email: 'N/A',
+      email: null,
       source: 'indiamart',
       rating: null,
       reviews: 0,
@@ -100,9 +100,12 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
 }
 
 export async function searchIndiaMart({ city = '', query, page, pages, limit = 50 }) {
+  const startTime = Date.now();
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
-  const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
+  const targetLimit = isMaxLimit ? 1000 : Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   if (page !== undefined && page !== null && page !== '') {
     const singlePage = Math.max(parseInt(page, 10) || 1, 1);
@@ -113,21 +116,24 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
       query: cleanQ,
       page: singlePage,
       total_results: leads.length,
+      execution_time_ms: Date.now() - startTime,
       results: leads.slice(0, targetLimit)
     };
   }
 
   // 10 leads per page
   const neededPages = pages
-    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 10)
-    : Math.min(Math.ceil(targetLimit / 10), 10);
+    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 50)
+    : (isMaxLimit ? 30 : Math.min(Math.ceil(targetLimit / 10), 30));
 
   const allLeads = [];
   const seenPhones = new Set();
   const seenNames = new Set();
+  let pagesFetched = 0;
 
   for (let p = 1; p <= neededPages; p++) {
     try {
+      pagesFetched++;
       const { leads } = await scrapeIndiaMartPage({ city: normCity, query: cleanQ, page: p });
       if (leads.length === 0) break;
 
@@ -160,8 +166,10 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
     source: 'indiamart',
     city: normCity,
     query: cleanQ,
-    total_pages_fetched: neededPages,
+    total_pages_fetched: pagesFetched,
     total_results: allLeads.length,
+    execution_time_ms: Date.now() - startTime,
     results: allLeads
   };
 }
+

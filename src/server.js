@@ -88,14 +88,21 @@ app.get('/', (req, res) => {
         method: 'GET',
         path: '/api/search',
         params: {
-          city: 'Required. City name (e.g. Delhi, Mumbai, Bangalore, Pune)',
+          city: 'Required. City name (e.g. Delhi, Mumbai, Bangalore, Hyderabad)',
           query: 'Required. Category or business keyword (e.g. Caterers, pet-shop, solar panel)',
           source: 'Optional. Single source or comma-separated list: "all", "justdial", "grotal", "indiamart", "tradeindia", "sulekha" (default: all)',
-          limit: 'Optional. Maximum leads to return (1 to 200, default: 50. Auto-paginates across sources)',
+          limit: 'Optional. Maximum leads to return: integer (1 to 1000) or "max" / "all" to extract directory maximum (default: 50)',
+          has_phone: 'Optional. Filter leads with valid 10-digit phone number: true/false',
+          has_email: 'Optional. Filter leads with verified email address: true/false',
+          has_contact: 'Optional. Filter leads with phone OR email (mutually exclusive contact): true/false',
+          enrich_emails: 'Optional. Concurrently fetch merchant SSR detail pages for direct emails: true/false (default: true)',
+          verified: 'Optional. Filter verified leads only: true/false',
+          min_rating: 'Optional. Minimum star rating (e.g. 4.0)',
           page: 'Optional. Specific page number to query',
           pages: 'Optional. Number of pages to iterate per source'
         },
-        example: '/api/search?source=all&city=Delhi&query=caterers&limit=100'
+        example: '/api/search?source=all&city=Hyderabad&query=pet%20shops&limit=max'
+
       },
       export_csv: {
         method: 'GET',
@@ -215,11 +222,14 @@ app.get('/api/search', async (req, res) => {
     proxy,
     relay,
     has_phone,
+    has_email,
+    has_contact,
     only_contacts,
     has_whatsapp,
     verified,
     verified_only,
-    min_rating
+    min_rating,
+    enrich_emails
   } = req.query;
 
   if (!city || !query) {
@@ -231,11 +241,14 @@ app.get('/api/search', async (req, res) => {
 
   const isRelayed = req.headers['user-agent']?.includes('Vyapar-API-Gateway') || req.headers['user-agent']?.includes('Justdial-API-Gateway');
   const filterOptions = {
-    has_phone: has_phone === 'true' || only_contacts === 'true',
-    only_contacts: has_phone === 'true' || only_contacts === 'true',
+    has_phone: has_phone === 'true',
+    has_email: has_email === 'true',
+    has_contact: has_contact === 'true' || only_contacts === 'true',
+    only_contacts: has_contact === 'true' || only_contacts === 'true',
     has_whatsapp: has_whatsapp === 'true',
     verified_only: verified === 'true' || verified_only === 'true',
-    min_rating: min_rating ? parseFloat(min_rating) : null
+    min_rating: min_rating ? parseFloat(min_rating) : null,
+    enrich_emails: enrich_emails !== 'false'
   };
 
   try {
@@ -249,12 +262,20 @@ app.get('/api/search', async (req, res) => {
         limit,
         proxy,
         relay,
-        _relayed: isRelayed
+        _relayed: isRelayed,
+        enrich_emails: filterOptions.enrich_emails,
+        has_email: filterOptions.has_email
       });
 
       let resultsList = result.results || [];
       if (filterOptions.has_phone) {
         resultsList = resultsList.filter(l => l.phone && l.phone.length === 10);
+      }
+      if (filterOptions.has_email) {
+        resultsList = resultsList.filter(l => l.email && l.email.includes('@'));
+      }
+      if (filterOptions.has_contact) {
+        resultsList = resultsList.filter(l => (l.phone && l.phone.length === 10) || (l.email && l.email.includes('@')));
       }
       if (filterOptions.has_whatsapp) {
         resultsList = resultsList.filter(l => l.whatsapp && l.whatsapp.length === 10);
@@ -303,7 +324,7 @@ app.get('/api/search', async (req, res) => {
 // Specific platform search shortcuts
 app.get('/api/:platform(justdial|grotal|indiamart|tradeindia|sulekha)/search', async (req, res) => {
   const { platform } = req.params;
-  const { city, query, page, pages, limit, proxy, relay } = req.query;
+  const { city, query, page, pages, limit, proxy, relay, enrich_emails, has_email, has_phone } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -323,7 +344,10 @@ app.get('/api/:platform(justdial|grotal|indiamart|tradeindia|sulekha)/search', a
       limit,
       proxy,
       relay,
-      _relayed: isRelayed
+      _relayed: isRelayed,
+      enrich_emails: enrich_emails !== 'false',
+      has_email: has_email === 'true',
+      has_phone: has_phone === 'true'
     });
 
     res.json({
@@ -338,6 +362,7 @@ app.get('/api/:platform(justdial|grotal|indiamart|tradeindia|sulekha)/search', a
   }
 });
 
+
 // Unified Export directly as CSV download
 app.get('/api/export/csv', async (req, res) => {
   const {
@@ -350,11 +375,14 @@ app.get('/api/export/csv', async (req, res) => {
     proxy,
     relay,
     has_phone,
+    has_email,
+    has_contact,
     only_contacts,
     has_whatsapp,
     verified,
     verified_only,
-    min_rating
+    min_rating,
+    enrich_emails
   } = req.query;
 
   if (!city || !query) {
@@ -365,11 +393,14 @@ app.get('/api/export/csv', async (req, res) => {
   }
 
   const filterOptions = {
-    has_phone: has_phone === 'true' || only_contacts === 'true',
-    only_contacts: has_phone === 'true' || only_contacts === 'true',
+    has_phone: has_phone === 'true',
+    has_email: has_email === 'true',
+    has_contact: has_contact === 'true' || only_contacts === 'true',
+    only_contacts: has_contact === 'true' || only_contacts === 'true',
     has_whatsapp: has_whatsapp === 'true',
     verified_only: verified === 'true' || verified_only === 'true',
-    min_rating: min_rating ? parseFloat(min_rating) : null
+    min_rating: min_rating ? parseFloat(min_rating) : null,
+    enrich_emails: enrich_emails !== 'false'
   };
 
   try {
@@ -385,11 +416,19 @@ app.get('/api/export/csv', async (req, res) => {
         limit,
         proxy,
         relay,
-        _relayed: isRelayed
+        _relayed: isRelayed,
+        enrich_emails: filterOptions.enrich_emails,
+        has_email: filterOptions.has_email
       });
       leads = data.results || [];
       if (filterOptions.has_phone) {
         leads = leads.filter(l => l.phone && l.phone.length === 10);
+      }
+      if (filterOptions.has_email) {
+        leads = leads.filter(l => l.email && l.email.includes('@'));
+      }
+      if (filterOptions.has_contact) {
+        leads = leads.filter(l => (l.phone && l.phone.length === 10) || (l.email && l.email.includes('@')));
       }
       if (filterOptions.has_whatsapp) {
         leads = leads.filter(l => l.whatsapp && l.whatsapp.length === 10);
@@ -422,6 +461,7 @@ app.get('/api/export/csv', async (req, res) => {
       'WhatsApp',
       'WhatsApp_Link',
       'Email',
+      'Contact_Person',
       'Source',
       'Rating',
       'Reviews',
@@ -440,7 +480,8 @@ app.get('/api/export/csv', async (req, res) => {
       escapeCsv(item.phone),
       escapeCsv(item.whatsapp),
       escapeCsv(item.whatsapp_link),
-      escapeCsv(item.email || 'N/A'),
+      escapeCsv(item.email || ''),
+      escapeCsv(item.contact_person || ''),
       escapeCsv(Array.isArray(item.sources) ? item.sources.join('; ') : (item.source || source)),
       escapeCsv(item.rating || ''),
       escapeCsv(item.reviews || ''),
@@ -453,6 +494,7 @@ app.get('/api/export/csv', async (req, res) => {
       escapeCsv(Array.isArray(item.categories) ? item.categories.join('; ') : (item.categories || '')),
       escapeCsv(item.url)
     ].join(','));
+
 
     const csvContent = [headers.join(','), ...rows].join('\n');
     const filename = `${city}_${query}_${source}_leads.csv`.toLowerCase().replace(/[^a-z0-9_.-]/g, '_');

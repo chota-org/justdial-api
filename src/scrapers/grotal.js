@@ -2,7 +2,7 @@
 // Uses Grotal's native AutoSuggest API (SearchAutoSuggest.ashx) to resolve canonical category taxonomy
 // and extracts Schema.org LocalBusiness JSON-LD with unmasked phone numbers and physical addresses.
 
-import { sanitizeQuery, normalizeCity, cleanPhone, slugify } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
 
 const CITY_ID_CACHE = {
   'delhi': '44', 'new delhi': '44', 'ncr': '44', 'noida': '44', 'gurgaon': '44', 'faridabad': '44', 'ghaziabad': '44',
@@ -164,7 +164,7 @@ export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }
             phone: phone || rawPhone,
             whatsapp: phone.length === 10 ? phone : '',
             whatsapp_link: phone.length === 10 ? `https://wa.me/91${phone}` : '',
-            email: 'N/A',
+            email: cleanEmail(item.email) || null,
             source: 'grotal',
             rating: null,
             reviews: 0,
@@ -191,11 +191,14 @@ export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }
  * High-level search: Resolves canonical taxonomy via native search, paginates, and handles edge cases
  */
 export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
+  const startTime = Date.now();
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
   const cityId = await getCityId(normCity);
   const formattedCity = normCity.charAt(0).toUpperCase() + normCity.slice(1).toLowerCase();
-  const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
+  const targetLimit = isMaxLimit ? 1000 : Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   // 1. Resolve canonical slugs using Grotal's native AutoSuggest API
   const slugs = await resolveGrotalSlugs(cleanQ, cityId);
@@ -212,21 +215,24 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
       resolved_slug: primarySlug,
       page: singlePage,
       total_results: leads.length,
+      execution_time_ms: Date.now() - startTime,
       results: leads.slice(0, targetLimit)
     };
   }
 
   // Auto-pagination: 20 leads per page
   const maxPagesToFetch = pages
-    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 10)
-    : Math.min(Math.ceil(targetLimit / 20), 10);
+    ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 50)
+    : (isMaxLimit ? 25 : Math.min(Math.ceil(targetLimit / 20), 25));
 
   const allLeads = [];
   const seenPhones = new Set();
   const seenNames = new Set();
+  let pagesFetched = 0;
 
   for (let p = 1; p <= maxPagesToFetch; p++) {
     try {
+      pagesFetched++;
       const leads = await scrapeGrotalPage({ formattedCity, cityId, slug: primarySlug, page: p });
       if (leads.length === 0) break; // Reached end of category
 
@@ -282,8 +288,10 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
     city: normCity,
     query: cleanQ,
     resolved_slug: primarySlug,
-    total_pages_fetched: maxPagesToFetch,
+    total_pages_fetched: pagesFetched,
     total_results: allLeads.length,
+    execution_time_ms: Date.now() - startTime,
     results: allLeads
   };
 }
+

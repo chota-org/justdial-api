@@ -2,7 +2,7 @@
 // Uses Sulekha's native search API (azsearch.sulekha.com) to resolve canonical category slugs
 // and extracts Schema.org ItemList JSON-LD with unmasked phone numbers and physical addresses.
 
-import { sanitizeQuery, normalizeCity, cleanPhone, slugify } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
 
 /**
  * Native Search: Queries Sulekha's search service to find exact canonical category URLs
@@ -92,7 +92,7 @@ function parseSulekhaHtml(html, targetUrl) {
               phone: phone || rawPhone,
               whatsapp: phone.length === 10 ? phone : '',
               whatsapp_link: phone.length === 10 ? `https://wa.me/91${phone}` : '',
-              email: 'N/A',
+              email: cleanEmail(item.email) || null,
               source: 'sulekha',
               rating: null,
               reviews: 0,
@@ -118,12 +118,72 @@ function parseSulekhaHtml(html, targetUrl) {
 }
 
 /**
+ * Concurrently enrich Sulekha profile leads with verified merchant mailto emails and phones
+ */
+export async function enrichSulekhaLeads(leads, { maxEnrich = 15, concurrency = 5 } = {}) {
+  const targetLeads = leads.slice(0, maxEnrich);
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9'
+  };
+
+  for (let i = 0; i < targetLeads.length; i += concurrency) {
+    const chunk = targetLeads.slice(i, i + concurrency);
+    await Promise.all(chunk.map(async lead => {
+      if (!lead.url || (!lead.url.includes('/profile/') && !lead.url.includes('contact-address'))) return;
+      try {
+        const res = await fetch(lead.url, { headers, signal: AbortSignal.timeout(6000) });
+        if (!res.ok) return;
+        const html = await res.text();
+
+        const mailtoMatch = html.match(/href=["']mailto:([^"'?>]+)["']/i);
+        if (mailtoMatch && mailtoMatch[1] && !lead.email) {
+          const email = cleanEmail(mailtoMatch[1]);
+          if (email) lead.email = email;
+        }
+
+        // If lead had no phone, check profile JSON-LD telephone
+        if (!lead.phone) {
+          const telMatch = html.match(/"telephone":"([^"]+)"/);
+          if (telMatch && telMatch[1]) {
+            const p = cleanPhone(telMatch[1]);
+            if (p && p.length === 10) {
+              lead.phone = p;
+              lead.whatsapp = p;
+              lead.whatsapp_link = `https://wa.me/91${p}`;
+            }
+          }
+        }
+      } catch {
+        // Non-blocking enrichment failure
+      }
+    }));
+  }
+
+  return leads;
+}
+
+/**
  * High-level Sulekha search with native taxonomy resolution, sub-category pagination, and deduplication
  */
-export async function searchSulekha({ city, query, limit = 50, relay, _relayed }) {
+export async function searchSulekha(options = {}) {
+  const startTime = Date.now();
+  const {
+    city,
+    query,
+    limit = 50,
+    relay,
+    _relayed,
+    enrich_emails = true,
+    has_email = false
+  } = options;
+
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
-  const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
+  const targetLimit = isMaxLimit ? 1000 : Math.min(Math.max(parseInt(limit, 10) || 50, 1), 1000);
 
   // If running in cloud and relay is configured, delegate search to Indian residential relay
   const activeRelay = relay || process.env.RELAY_URL;
@@ -132,7 +192,7 @@ export async function searchSulekha({ city, query, limit = 50, relay, _relayed }
       const relayParams = new URLSearchParams({
         city: normCity,
         query: cleanQ,
-        limit: targetLimit
+        limit: isMaxLimit ? 'max' : targetLimit
       });
       const relayUrl = `${activeRelay.replace(/\/+$/, '')}/api/sulekha/search?${relayParams.toString()}`;
       const relayResp = await fetch(relayUrl, {
@@ -145,7 +205,10 @@ export async function searchSulekha({ city, query, limit = 50, relay, _relayed }
       if (relayResp.ok) {
         const json = await relayResp.json();
         if (json.success && Array.isArray(json.results)) {
-          return json.results;
+          return {
+            ...json,
+            execution_time_ms: Date.now() - startTime
+          };
         }
       }
     } catch (relayErr) {
@@ -184,12 +247,21 @@ export async function searchSulekha({ city, query, limit = 50, relay, _relayed }
     }
   }
 
+  // Enrich top leads with mailto emails from merchant profiles
+  const shouldEnrich = enrich_emails !== false && (has_email || enrich_emails === true || targetLimit <= 30 || isMaxLimit);
+  if (shouldEnrich && allLeads.length > 0) {
+    const enrichLimit = isMaxLimit ? 20 : Math.min(allLeads.length, 20);
+    await enrichSulekhaLeads(allLeads, { maxEnrich: enrichLimit });
+  }
+
   return {
     source: 'sulekha',
     city: normCity,
     query: cleanQ,
     resolved_categories: categoryUrls,
     total_results: allLeads.length,
+    execution_time_ms: Date.now() - startTime,
     results: allLeads
   };
 }
+
