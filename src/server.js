@@ -119,15 +119,15 @@ app.get('/api/debug', async (req, res) => {
     'Pragma': 'no-cache'
   };
 
-  if (req.query.sec === '1') {
-    headers['sec-ch-ua'] = '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"';
-    headers['sec-ch-ua-mobile'] = '?0';
-    headers['sec-ch-ua-platform'] = '"Windows"';
-    headers['sec-fetch-dest'] = 'document';
-    headers['sec-fetch-mode'] = 'navigate';
-    headers['sec-fetch-site'] = 'none';
-    headers['sec-fetch-user'] = '?1';
-    headers['upgrade-insecure-requests'] = '1';
+  if (req.query.cookie) {
+    headers['Cookie'] = req.query.cookie;
+  }
+  
+  // Forward any custom test headers
+  for (const [key, val] of Object.entries(req.headers)) {
+    if (key.startsWith('x-test-')) {
+      headers[key.replace('x-test-', '')] = val;
+    }
   }
 
   try {
