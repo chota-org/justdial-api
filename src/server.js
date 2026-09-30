@@ -10,6 +10,7 @@ import {
   SOURCES
 } from './scrapers/index.js';
 import { normalizeCity, sanitizeQuery, detectIntent } from './utils/normalizer.js';
+import { filterRelevantLeads } from './utils/relevanceFilter.js';
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -267,7 +268,7 @@ app.get('/api/search', async (req, res) => {
         has_email: filterOptions.has_email
       });
 
-      let resultsList = result.results || [];
+      let resultsList = filterRelevantLeads(result.results || [], query);
       if (filterOptions.has_phone) {
         resultsList = resultsList.filter(l => l.phone && l.phone.length === 10);
       }

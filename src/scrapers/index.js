@@ -56,6 +56,7 @@ export const SOURCES = {
 };
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, detectIntent } from '../utils/normalizer.js';
+import { filterRelevantLeads } from '../utils/relevanceFilter.js';
 
 /**
  * Execute search for a single designated source
@@ -264,7 +265,9 @@ export async function searchAllSources(options = {}) {
 
   const intent = detectIntent(query);
 
-  let filteredLeads = Array.from(leadMap.values());
+  const rawLeads = Array.from(leadMap.values());
+  // Semantic relevance validation: filters out business names that clash with query intent (e.g. medical shops in restaurant searches)
+  let filteredLeads = filterRelevantLeads(rawLeads, cleanQ || query);
 
   // Contact filtering options (phone and email can be mutually exclusive)
   if (has_phone) {
