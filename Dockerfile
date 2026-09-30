@@ -11,17 +11,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=10000
 
-# Copy node_modules from builder
+# Copy production node_modules from builder
 COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src/ ./src/
 
-# Use non-root node user
+# Run as non-root user
 USER node
 
 EXPOSE 10000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:10000/health || exit 1
 
 CMD ["node", "src/server.js"]
