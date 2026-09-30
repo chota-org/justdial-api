@@ -3,6 +3,7 @@
 // and extracts Schema.org LocalBusiness JSON-LD with unmasked phone numbers and physical addresses.
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
+import { getCityAreas } from '../utils/cityAreas.js';
 
 const CITY_ID_CACHE = {
   'delhi': '44', 'new delhi': '44', 'ncr': '44', 'noida': '44', 'gurgaon': '44', 'faridabad': '44', 'ghaziabad': '44',
@@ -117,10 +118,16 @@ export async function resolveGrotalSlugs(query, cityId) {
 /**
  * Scrapes a single page for a given slug on Grotal
  */
-export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }) {
-  const url = cityId !== '0'
-    ? `https://www.grotal.com/${formattedCity}/${slug}-C${cityId}A0P${page}A0/`
-    : `https://www.grotal.com/India/${slug}-0A0P${page}/`;
+export async function scrapeGrotalPage({ formattedCity, cityId, slug, area = null, page = 1 }) {
+  let url;
+  if (area && cityId !== '0') {
+    const formattedArea = String(area).trim().replace(/[\s_]+/g, '-');
+    url = `https://www.grotal.com/${formattedCity}/${slug}-in-${formattedArea}-C${cityId}A0P${page}A0/`;
+  } else if (cityId !== '0') {
+    url = `https://www.grotal.com/${formattedCity}/${slug}-C${cityId}A0P${page}A0/`;
+  } else {
+    url = `https://www.grotal.com/India/${slug}-0A0P${page}/`;
+  }
 
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -153,7 +160,7 @@ export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }
           const rawPhone = item.telephone || '';
           const phone = cleanPhone(rawPhone);
           const addr = item.address || {};
-          const street = addr.streetAddress || '';
+          const street = addr.streetAddress || area || '';
           const locality = addr.addressLocality || formattedCity;
           const region = addr.addressRegion || '';
           const postal = addr.postalCode || '';
@@ -169,7 +176,7 @@ export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }
             rating: null,
             reviews: 0,
             address: fullAddress,
-            area: street,
+            area: street || area || '',
             city: locality,
             pincode: postal,
             website: '',
@@ -254,6 +261,47 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
     } catch (err) {
       console.warn(`[Grotal] Page ${p} error: ${err.message}`);
       break;
+    }
+  }
+
+  // Multi-area locality expansion when limit > 20 or limit=max
+  if ((isMaxLimit || allLeads.length < targetLimit) && cityId !== '0') {
+    const areas = getCityAreas(normCity);
+    const maxAreas = isMaxLimit ? Math.min(areas.length, 35) : Math.min(Math.ceil((targetLimit - allLeads.length) / 5), areas.length);
+    const areaBatchSize = 5;
+
+    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+      if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      const chunk = areas.slice(i, i + areaBatchSize);
+
+      const chunkResults = await Promise.all(chunk.map(async areaName => {
+        try {
+          return await scrapeGrotalPage({ formattedCity, cityId, slug: primarySlug, area: areaName, page: 1 });
+        } catch {
+          return [];
+        }
+      }));
+
+      for (const leads of chunkResults) {
+        for (const lead of leads) {
+          const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
+          const nameKey = lead.name.toLowerCase();
+
+          if (phoneKey && seenPhones.has(phoneKey)) continue;
+          if (nameKey && seenNames.has(nameKey)) continue;
+
+          if (phoneKey) seenPhones.add(phoneKey);
+          if (nameKey) seenNames.add(nameKey);
+
+          allLeads.push(lead);
+          if (!isMaxLimit && allLeads.length >= targetLimit) break;
+        }
+        if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      }
+
+      if (i + areaBatchSize < maxAreas) {
+        await new Promise(r => setTimeout(r, 60));
+      }
     }
   }
 

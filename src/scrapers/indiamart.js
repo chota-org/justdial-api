@@ -2,6 +2,7 @@
 // Uses server-rendered mobile cards on m.indiamart.com with direct unmasked seller contacts.
 
 import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
+import { getCityAreas } from '../utils/cityAreas.js';
 
 export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
   const normCity = normalizeCity(city);
@@ -159,6 +160,52 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
     } catch (err) {
       console.warn(`[IndiaMART] Page ${p} error: ${err.message}`);
       break;
+    }
+  }
+
+  // Multi-area locality expansion if target limit not met or limit=max
+  if (isMaxLimit || allLeads.length < targetLimit) {
+    const areas = getCityAreas(normCity);
+    const maxAreas = isMaxLimit ? Math.min(areas.length, 30) : Math.min(Math.ceil((targetLimit - allLeads.length) / 5), areas.length);
+    const areaBatchSize = 4;
+
+    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+      if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      const chunk = areas.slice(i, i + areaBatchSize);
+
+      const chunkResults = await Promise.all(chunk.map(async areaName => {
+        try {
+          const areaQuery = `${cleanQ} in ${areaName}`;
+          const { leads } = await scrapeIndiaMartPage({ city: normCity, query: areaQuery, page: 1 });
+          leads.forEach(l => {
+            if (!l.area) l.area = areaName;
+          });
+          return leads;
+        } catch {
+          return [];
+        }
+      }));
+
+      for (const leads of chunkResults) {
+        for (const lead of leads) {
+          const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
+          const nameKey = lead.name.toLowerCase();
+
+          if (phoneKey && seenPhones.has(phoneKey)) continue;
+          if (nameKey && seenNames.has(nameKey)) continue;
+
+          if (phoneKey) seenPhones.add(phoneKey);
+          if (nameKey) seenNames.add(nameKey);
+
+          allLeads.push(lead);
+          if (!isMaxLimit && allLeads.length >= targetLimit) break;
+        }
+        if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      }
+
+      if (i + areaBatchSize < maxAreas) {
+        await new Promise(r => setTimeout(r, 80));
+      }
     }
   }
 

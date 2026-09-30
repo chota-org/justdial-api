@@ -12,7 +12,9 @@ export const CITY_AREAS = {
     'Nampally', 'Saidabad', 'Masab Tank', 'Sanjeeva Reddy Nagar', 'Moosapet',
     'Hayath Nagar', 'Safilguda', 'ECIL', 'Malkajgiri', 'Tolichowki',
     'Charminar', 'Kacheguda', 'Lingampally', 'Shamshabad', 'Rajendra Nagar',
-    'AS Rao Nagar', 'Nallagandla', 'Tellapur', 'Bachupally', 'Hafeezpet'
+    'AS Rao Nagar', 'Nallagandla', 'Tellapur', 'Bachupally', 'Hafeezpet',
+    'Jeedimetla', 'Balanagar', 'Sanathnagar', 'Cherlapally', 'Nacharam',
+    'Kattedan', 'Patancheru', 'Medchal'
   ],
   'bangalore': [
     'Koramangala', 'Indiranagar', 'Whitefield', 'HSR Layout', 'Jayanagar',
@@ -21,7 +23,8 @@ export const CITY_AREAS = {
     'Sarjapur Road', 'Kalyan Nagar', 'Vijayanagar', 'Basavanagudi', 'RT Nagar',
     'Richmond Town', 'Domlur', 'Ulsoor', 'Frazer Town', 'Bannerghatta Road',
     'Harlur', 'Kasavanahalli', 'Kengeri', 'KR Puram', 'Mahadevapura',
-    'Vidyaranyapura', 'Thanisandra', 'Begur', 'Bommanahalli', 'Nagarbhavi'
+    'Vidyaranyapura', 'Thanisandra', 'Begur', 'Bommanahalli', 'Nagarbhavi',
+    'Peenya', 'Bommasandra', 'Jigani', 'Bidadi'
   ],
   'mumbai': [
     'Andheri West', 'Andheri East', 'Bandra West', 'Bandra East', 'Borivali West',
@@ -30,7 +33,8 @@ export const CITY_AREAS = {
     'Powai', 'Ghatkopar', 'Mulund', 'Thane West', 'Navi Mumbai',
     'Vashi', 'Dadar', 'Worli', 'Lower Parel', 'Colaba',
     'Chembur', 'Kurla', 'Bhandup', 'Mira Road', 'Dahisar',
-    'Bhayandar', 'Panvel', 'Nerul', 'Belapur', 'Kharghar'
+    'Bhayandar', 'Panvel', 'Nerul', 'Belapur', 'Kharghar',
+    'Bhiwandi', 'Turbhe', 'Rabale', 'Mahape', 'Taloja'
   ],
   'delhi': [
     'Connaught Place', 'Karol Bagh', 'Lajpat Nagar', 'South Extension', 'Rohini',
@@ -38,7 +42,8 @@ export const CITY_AREAS = {
     'Greater Kailash', 'Vasant Kunj', 'Nehru Place', 'Laxmi Nagar', 'Preet Vihar',
     'Chandni Chowk', 'Rajouri Garden', 'Punjabi Bagh', 'Paschim Vihar', 'Shahdara',
     'Malviya Nagar', 'Defence Colony', 'Mayur Vihar', 'Okhla', 'Patel Nagar',
-    'Kalkaji', 'Green Park', 'Model Town', 'Shalimar Bagh', 'Tilak Nagar'
+    'Kalkaji', 'Green Park', 'Model Town', 'Shalimar Bagh', 'Tilak Nagar',
+    'Mayapuri', 'Wazirpur', 'Naraina', 'Bawana', 'Kirti Nagar'
   ],
   'chennai': [
     'T Nagar', 'Anna Nagar', 'Velachery', 'Adyar', 'Mylapore',
@@ -46,21 +51,23 @@ export const CITY_AREAS = {
     'Besant Nagar', 'Kodambakkam', 'Alwarpet', 'Kilpauk', 'Royapettah',
     'Chromepet', 'Vadapalani', 'Perambur', 'Sholinganallur', 'OMR',
     'Medavakkam', 'Pallavaram', 'Ashok Nagar', 'Mogappair', 'Kolathur',
-    'Ambattur', 'Avadi', 'Poonamallee'
+    'Ambattur', 'Avadi', 'Poonamallee', 'Sriperumbudur'
   ],
   'kolkata': [
     'Park Street', 'Salt Lake', 'New Town', 'Ballygunge', 'Gariahat',
     'Behala', 'Dum Dum', 'Howrah', 'Jadavpur', 'Tollygunge',
     'Alipore', 'Bhowanipore', 'Shyambazar', 'Kankurgachi', 'Rajarhat',
     'Lake Town', 'Kasba', 'Baguiati', 'Barasat', 'Garia',
-    'Jorasanko', 'Sealdah', 'Esplanade', 'Rash Behari', 'Ultadanga'
+    'Jorasanko', 'Sealdah', 'Esplanade', 'Rash Behari', 'Ultadanga',
+    'Taratala', 'Cossipore'
   ],
   'pune': [
     'Kothrud', 'Viman Nagar', 'Baner', 'Wakad', 'Hinjawadi',
     'Koregaon Park', 'Kalyani Nagar', 'Aundh', 'Hadapsar', 'Pimpri',
     'Chinchwad', 'Magarpatta', 'Shivaji Nagar', 'Camp', 'Bibwewadi',
     'Sinhagad Road', 'Kharadi', 'Bavdhan', 'Wanowrie', 'Vishrantwadi',
-    'Dhanori', 'Pimple Saudagar', 'Nigdi', 'Bhosari', 'Katraj'
+    'Dhanori', 'Pimple Saudagar', 'Nigdi', 'Bhosari', 'Katraj',
+    'Chakan', 'Talawade'
   ],
   'ahmedabad': [
     'Navrangpura', 'SG Highway', 'Satellite', 'Vastrapur', 'Bodakdev',

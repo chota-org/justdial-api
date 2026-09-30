@@ -3,6 +3,7 @@
 // and extracts Schema.org ItemList JSON-LD with unmasked phone numbers and physical addresses.
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
+import { getCityAreas } from '../utils/cityAreas.js';
 
 /**
  * Native Search: Queries Sulekha's search service to find exact canonical category URLs
@@ -44,7 +45,7 @@ export async function resolveSulekhaCategoryUrls(city, query) {
 /**
  * Extracts leads from a specific Sulekha category page
  */
-export async function scrapeSulekhaUrl(targetUrl) {
+export async function scrapeSulekhaUrl(targetUrl, fallbackArea = '') {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -60,10 +61,10 @@ export async function scrapeSulekhaUrl(targetUrl) {
   }
 
   const html = await resp.text();
-  return parseSulekhaHtml(html, targetUrl);
+  return parseSulekhaHtml(html, targetUrl, fallbackArea);
 }
 
-function parseSulekhaHtml(html, targetUrl) {
+function parseSulekhaHtml(html, targetUrl, fallbackArea = '') {
   const leads = [];
   const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let scriptMatch;
@@ -82,7 +83,7 @@ function parseSulekhaHtml(html, targetUrl) {
             const rawPhone = item.telephone || '';
             const phone = cleanPhone(rawPhone);
             const addr = item.address || {};
-            const locality = addr.addressLocality || '';
+            const locality = addr.addressLocality || fallbackArea;
             const region = addr.addressRegion || '';
             const postal = addr.postalCode || '';
             const fullAddress = [locality, region, postal].filter(Boolean).join(', ');
@@ -244,6 +245,58 @@ export async function searchSulekha(options = {}) {
       if (allLeads.length >= targetLimit) break;
     } catch (err) {
       console.warn(`[Sulekha] Error scraping ${catUrl}: ${err.message}`);
+    }
+  }
+
+  // 2. Exhaustive Multi-Area Locality Expansion (when limit > 20 or limit === 'max')
+  if ((isMaxLimit || allLeads.length < targetLimit) && categoryUrls.length > 0) {
+    let catSlug = '';
+    try {
+      const parsed = new URL(categoryUrls[0]);
+      catSlug = parsed.pathname.split('/').filter(Boolean)[0] || '';
+    } catch {
+      catSlug = slugify(cleanQ || query);
+    }
+    if (!catSlug) catSlug = slugify(cleanQ || query);
+
+    const areas = getCityAreas(normCity);
+    const areaBatchSize = 5;
+    const maxAreas = isMaxLimit ? Math.min(areas.length, 40) : Math.min(Math.ceil((targetLimit - allLeads.length) / 8), areas.length);
+
+    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+      if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      const chunk = areas.slice(i, i + areaBatchSize);
+
+      const chunkResults = await Promise.all(chunk.map(async areaName => {
+        const areaSlug = slugify(areaName);
+        const areaUrl = `https://www.sulekha.com/${catSlug}/${areaSlug}-${slugify(normCity)}`;
+        try {
+          return await scrapeSulekhaUrl(areaUrl, areaName);
+        } catch {
+          return [];
+        }
+      }));
+
+      for (const leads of chunkResults) {
+        for (const lead of leads) {
+          const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
+          const nameKey = lead.name.toLowerCase();
+
+          if (phoneKey && seenPhones.has(phoneKey)) continue;
+          if (nameKey && seenNames.has(nameKey)) continue;
+
+          if (phoneKey) seenPhones.add(phoneKey);
+          if (nameKey) seenNames.add(nameKey);
+
+          allLeads.push(lead);
+          if (!isMaxLimit && allLeads.length >= targetLimit) break;
+        }
+        if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      }
+
+      if (i + areaBatchSize < maxAreas) {
+        await new Promise(r => setTimeout(r, 80));
+      }
     }
   }
 

@@ -316,6 +316,7 @@ export async function searchAllSources(options = {}) {
     },
     requested_sources: validSources,
     sources_status: sourceStats,
+    total_results: finalResults.length,
     total_deduplicated: finalResults.length,
     results: finalResults
   };

@@ -2,6 +2,7 @@
 // Extracts Next.js SSR state (__NEXT_DATA__) with 28 listings per page.
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail } from '../utils/normalizer.js';
+import { getCityAreas } from '../utils/cityAreas.js';
 
 export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
   const normCity = normalizeCity(city);
@@ -148,6 +149,47 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
     } catch (err) {
       console.warn(`[TradeIndia] Page ${p} error: ${err.message}`);
       break;
+    }
+  }
+
+  // Multi-area locality expansion if target limit not met or limit=max
+  if (isMaxLimit || allLeads.length < targetLimit) {
+    const areas = getCityAreas(normCity);
+    const maxAreas = isMaxLimit ? Math.min(areas.length, 25) : Math.min(Math.ceil((targetLimit - allLeads.length) / 10), areas.length);
+    const areaBatchSize = 4;
+
+    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+      if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      const chunk = areas.slice(i, i + areaBatchSize);
+
+      const chunkResults = await Promise.all(chunk.map(async areaName => {
+        try {
+          const areaQuery = `${cleanQ} ${areaName}`;
+          const { leads } = await scrapeTradeIndiaPage({ city: normCity, query: areaQuery, page: 1 });
+          leads.forEach(l => {
+            if (!l.area) l.area = areaName;
+          });
+          return leads;
+        } catch {
+          return [];
+        }
+      }));
+
+      for (const leads of chunkResults) {
+        for (const lead of leads) {
+          const nameKey = lead.name.toLowerCase();
+          if (seenNames.has(nameKey)) continue;
+          seenNames.add(nameKey);
+
+          allLeads.push(lead);
+          if (!isMaxLimit && allLeads.length >= targetLimit) break;
+        }
+        if (!isMaxLimit && allLeads.length >= targetLimit) break;
+      }
+
+      if (i + areaBatchSize < maxAreas) {
+        await new Promise(r => setTimeout(r, 80));
+      }
     }
   }
 

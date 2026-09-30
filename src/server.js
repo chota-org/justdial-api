@@ -287,6 +287,7 @@ app.get('/api/search', async (req, res) => {
         resultsList = resultsList.filter(l => (l.rating || 0) >= filterOptions.min_rating);
       }
 
+      const duration = result.execution_time_ms || result.meta?.execution_time_ms || 0;
       return res.json({
         success: true,
         ...result,
@@ -294,9 +295,9 @@ app.get('/api/search', async (req, res) => {
         benchmark: {
           [source]: {
             count: resultsList.length,
-            duration_ms: result.meta?.execution_time_ms || 0
+            duration_ms: duration
           },
-          total_duration_ms: result.meta?.execution_time_ms || 0
+          total_duration_ms: duration
         },
         results: resultsList
       });
@@ -357,9 +358,19 @@ app.get('/api/:platform(justdial|grotal|indiamart|tradeindia|sulekha)/search', a
       has_phone: has_phone === 'true'
     });
 
+    const duration = result.execution_time_ms || result.meta?.execution_time_ms || 0;
+    const count = result.results?.length || result.total_results || 0;
+
     res.json({
       success: true,
-      ...result
+      ...result,
+      benchmark: {
+        [platform]: {
+          count,
+          duration_ms: duration
+        },
+        total_duration_ms: duration
+      }
     });
   } catch (err) {
     res.status(500).json({
