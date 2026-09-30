@@ -5,7 +5,23 @@ import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js
 import { getCityAreas } from '../utils/cityAreas.js';
 import { DynamicLocalityQueue } from '../utils/dynamicLocality.js';
 
-export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
+const IM_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.113 Mobile Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7',
+  'Referer': 'https://m.indiamart.com/',
+  'Sec-Ch-Ua': '"Chromium";v="124", "Not-A.Brand";v="99"',
+  'Sec-Ch-Ua-Mobile': '?1',
+  'Sec-Ch-Ua-Platform': '"Android"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'same-origin',
+  'Upgrade-Insecure-Requests': '1'
+};
+
+let cachedCookie = 'lang=0; r=g;';
+
+export async function scrapeIndiaMartPage({ city = '', query, page = 1 }, retries = 3) {
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
 
@@ -18,15 +34,47 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
   const url = `https://m.indiamart.com/isearch.php?${params.toString()}`;
 
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9'
+    ...IM_HEADERS,
+    ...(cachedCookie && { Cookie: cachedCookie })
   };
 
-  const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
-  if (!resp.ok) {
-    if (resp.status === 404) return { source: 'indiamart', city: normCity, query: cleanQ, page, count: 0, leads: [] };
-    throw new Error(`IndiaMART returned HTTP ${resp.status}`);
+  let resp;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+      
+      // Update session cookies if returned
+      const setCookie = resp.headers.get('set-cookie');
+      if (setCookie) {
+        const parts = setCookie.split(';')[0];
+        if (parts && !cachedCookie.includes(parts)) {
+          cachedCookie = `${cachedCookie} ${parts};`;
+        }
+      }
+
+      if (resp.status === 429) {
+        if (attempt < retries) {
+          const backoffMs = (Math.pow(2, attempt) * 1000) + Math.floor(Math.random() * 500);
+          console.warn(`[IndiaMART] 429 rate limit hit, backing off ${backoffMs}ms (attempt ${attempt + 1}/${retries})...`);
+          await new Promise(r => setTimeout(r, backoffMs));
+          continue;
+        }
+        throw new Error('IndiaMART returned HTTP 429 (rate limit exceeded after retries)');
+      }
+
+      if (!resp.ok) {
+        if (resp.status === 404) return { source: 'indiamart', city: normCity, query: cleanQ, page, count: 0, leads: [] };
+        throw new Error(`IndiaMART returned HTTP ${resp.status}`);
+      }
+      break;
+    } catch (err) {
+      if (attempt < retries && (err.name === 'TimeoutError' || err.message.includes('429'))) {
+        const backoffMs = (Math.pow(2, attempt) * 1000) + Math.floor(Math.random() * 500);
+        await new Promise(r => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw err;
+    }
   }
 
   const html = await resp.text();
@@ -158,6 +206,11 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
 
       // If page had zero new leads (only duplicate sponsored ones), stop pagination
       if (newLeadsInPage === 0 || allLeads.length >= targetLimit) break;
+
+      // Small jittered pause between pagination pages (150-300ms)
+      if (p < neededPages) {
+        await new Promise(r => setTimeout(r, 150 + Math.floor(Math.random() * 150)));
+      }
     } catch (err) {
       console.warn(`[IndiaMART] Page ${p} error: ${err.message}`);
       break;
@@ -175,7 +228,7 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
     localityQueue.queueFromListings(allLeads);
 
     const maxAreas = isMaxLimit ? 40 : Math.min(Math.ceil((targetLimit - allLeads.length) / 5), 25);
-    const areaBatchSize = 4;
+    const areaBatchSize = 2;
     let areasExplored = 0;
 
     while (localityQueue.hasMore() && areasExplored < maxAreas) {
@@ -220,7 +273,7 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
       }
 
       if (areasExplored < maxAreas) {
-        await new Promise(r => setTimeout(r, 80));
+        await new Promise(r => setTimeout(r, 200 + Math.floor(Math.random() * 200)));
       }
     }
   }
