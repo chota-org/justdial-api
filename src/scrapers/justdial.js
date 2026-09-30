@@ -1,12 +1,15 @@
 /**
  * Reverse-Engineered Justdial Scraper Engine
  * Uses Server-Side Rendered (SSR) Next.js __NEXT_DATA__ endpoints with canonical NCT resolution
- * Extracts unmasked phone numbers, ratings, addresses, and business details without a browser.
+ * Features Multi-Area Exhaustive Harvesting to overcome the single-category ~32 lead pagination ceiling
+ * Extracts unmasked phone numbers, direct merchant emails, contact persons, ratings, addresses, and business details without a browser.
  * Supports HTTP/HTTPS/SOCKS proxies via undici ProxyAgent.
  */
 
 import { ProxyAgent } from 'undici';
 import { sanitizeQuery, normalizeCity, cleanPhone as cleanPhoneNumber, cleanEmail, slugify } from '../utils/normalizer.js';
+import { getCityAreas } from '../utils/cityAreas.js';
+import { getPopularCategory } from '../utils/categories.js';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -52,6 +55,7 @@ function getDispatcher(proxyUrl) {
  * Extracts JSON data from Next.js __NEXT_DATA__ script block
  */
 function extractNextData(html) {
+  if (!html) return null;
   const marker = '<script id="__NEXT_DATA__"';
   const start = html.indexOf(marker);
   if (start === -1) return null;
@@ -65,8 +69,11 @@ function extractNextData(html) {
   }
 }
 
+// In-memory cache for resolved categories to avoid duplicate queries and rate limits
+const categoryResolutionCache = new Map();
+
 /**
- * Clean phone number: converts 09845239283 to 9845239283 or validates 10 digits
+ * Fetches category metadata and ncatid for a query slug with retry resilience and regex fallback
  */
 async function fetchCategoryMetadata(citySlug, querySlug, proxyUrl = null) {
   const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(querySlug)}`;
@@ -81,24 +88,53 @@ async function fetchCategoryMetadata(citySlug, querySlug, proxyUrl = null) {
     fetchOptions.dispatcher = dispatcher;
   }
 
-  const res = await fetch(url, fetchOptions);
-  if (!res.ok) {
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, fetchOptions);
+      if (!res.ok) {
+        if (attempt === 0) { await sleep(300); continue; }
+        return null;
+      }
+
+      const html = await res.text();
+      const nextData = extractNextData(html);
+      let ncatid = null;
+      let city = citySlug;
+      let search = querySlug;
+      let area = '';
+      let buildId = '';
+
+      if (nextData) {
+        const pp = nextData.props?.pageProps || {};
+        ncatid = pp.ncatid || pp.query?.ncatid || null;
+        city = pp.ct || citySlug;
+        search = pp.search || querySlug;
+        area = pp.resultsAreaInfo?.area || '';
+        buildId = nextData.buildId || '';
+      }
+
+      // Robust regex fallback if JSON block was absent or truncated
+      if (!ncatid) {
+        const mNct = html.match(/\/nct-(\d+)/) || html.match(/"ncatid":\s*"?(\d+)"?/);
+        if (mNct) ncatid = mNct[1];
+      }
+
+      if (ncatid) {
+        const cleanNcatid = String(ncatid).replace(/^nct-/, '');
+        return {
+          city: city,
+          search: search,
+          ncatid: cleanNcatid,
+          national_catid: `nct-${cleanNcatid}`,
+          area: area,
+          buildId: buildId
+        };
+      }
+    } catch (err) {
+      if (attempt === 0) { await sleep(300); continue; }
+    }
   }
-
-  const html = await res.text();
-  const nextData = extractNextData(html);
-  if (!nextData) return null;
-
-  const pp = nextData.props?.pageProps || {};
-  return {
-    city: pp.ct || citySlug,
-    search: pp.search || querySlug,
-    ncatid: pp.ncatid || pp.query?.ncatid || null,
-    national_catid: pp.query?.ncatid || (pp.ncatid ? `nct-${pp.ncatid}` : null),
-    area: pp.resultsAreaInfo?.area || '',
-    buildId: nextData.buildId || ''
-  };
+  return null;
 }
 
 /**
@@ -108,7 +144,28 @@ export async function resolveCategory(city, query, proxyUrl = null) {
   const normCity = normalizeCity(city);
   const cleanQ = sanitizeQuery(query, city);
   const citySlug = slugify(normCity);
+  const cacheKey = `${citySlug}:${slugify(cleanQ || query)}`;
 
+  if (categoryResolutionCache.has(cacheKey)) {
+    return categoryResolutionCache.get(cacheKey);
+  }
+
+  // 1. Instant dictionary resolution for popular categories (0ms, 100% reliable)
+  const popular = getPopularCategory(cleanQ) || getPopularCategory(query);
+  if (popular) {
+    const meta = {
+      city: citySlug,
+      search: popular.search,
+      ncatid: popular.ncatid,
+      national_catid: `nct-${popular.ncatid}`,
+      area: '',
+      buildId: ''
+    };
+    categoryResolutionCache.set(cacheKey, meta);
+    return meta;
+  }
+
+  // 2. Relay resolution if configured
   if (process.env.RELAY_URL && !proxyUrl) {
     try {
       const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/resolve?city=${encodeURIComponent(normCity)}&query=${encodeURIComponent(cleanQ)}`;
@@ -119,6 +176,7 @@ export async function resolveCategory(city, query, proxyUrl = null) {
       if (relayResp.ok) {
         const json = await relayResp.json();
         if (json.data && json.data.ncatid) {
+          categoryResolutionCache.set(cacheKey, json.data);
           return json.data;
         }
       }
@@ -127,7 +185,7 @@ export async function resolveCategory(city, query, proxyUrl = null) {
     }
   }
 
-  // Candidate slugs to test in order of relevance
+  // 3. Native category metadata candidate probes
   const candidates = [
     slugify(cleanQ),
     slugify(query),
@@ -141,6 +199,7 @@ export async function resolveCategory(city, query, proxyUrl = null) {
     try {
       const meta = await fetchCategoryMetadata(citySlug, candidate, proxyUrl);
       if (meta && meta.ncatid) {
+        categoryResolutionCache.set(cacheKey, meta);
         return meta;
       }
     } catch (err) {
@@ -148,8 +207,39 @@ export async function resolveCategory(city, query, proxyUrl = null) {
     }
   }
 
+  // 4. DuckDuckGo search dorking fallback (as specified in guidelines)
+  try {
+    const dorkUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:justdial.com/${citySlug} ${cleanQ} nct-`)}`;
+    const dorkResp = await fetch(dorkUrl, {
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+        'Referer': 'https://www.google.com/'
+      },
+      signal: AbortSignal.timeout(6000)
+    });
+    if (dorkResp.ok) {
+      const dorkHtml = await dorkResp.text();
+      const m = dorkHtml.match(/justdial\.com\/[^\/]+\/([a-zA-Z0-9\-]+)\/nct-(\d+)/);
+      if (m && m[1] && m[2]) {
+        const dorkMeta = {
+          city: citySlug,
+          search: m[1],
+          ncatid: m[2],
+          national_catid: `nct-${m[2]}`,
+          area: '',
+          buildId: ''
+        };
+        categoryResolutionCache.set(cacheKey, dorkMeta);
+        return dorkMeta;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Justdial] Search dorking fallback failed: ${err.message}`);
+  }
+
   // Fallback: return default slug even if ncatid is null
-  return {
+  const fallback = {
     city: citySlug,
     search: slugify(cleanQ || query),
     ncatid: null,
@@ -157,6 +247,7 @@ export async function resolveCategory(city, query, proxyUrl = null) {
     area: '',
     buildId: ''
   };
+  return fallback;
 }
 
 /**
@@ -170,7 +261,8 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
 
   const fetchOptions = {
     headers: getHeaders(),
-    redirect: 'follow'
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000)
   };
   if (dispatcher) {
     fetchOptions.dispatcher = dispatcher;
@@ -191,7 +283,8 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
   if (!listData?.results?.data || !listData?.results?.columns) {
     return {
       total: 0,
-      listings: []
+      listings: [],
+      nextdocid: listData?.nextdocid || ''
     };
   }
 
@@ -213,13 +306,13 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
     const phone = cleanPhoneNumber(rawPhone);
     const rawWp = getCol(row, 'wpnumber');
     const whatsappExplicit = cleanPhoneNumber(Array.isArray(rawWp) ? rawWp[0] : rawWp);
-    // In India, direct business mobile numbers are almost universally active on WhatsApp
     const whatsapp = whatsappExplicit || phone;
     const whatsappLink = whatsapp ? `https://wa.me/91${whatsapp}` : null;
     const ratingRaw = getCol(row, 'compRating');
     const reviewsRaw = getCol(row, 'totalReviews');
     const categoriesRaw = getCol(row, 'type');
     const weburl = getCol(row, 'weburl');
+    const docid = getCol(row, 'docid') || '';
 
     return {
       name: getCol(row, 'name') || '',
@@ -242,21 +335,135 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
       verified: getCol(row, 'verified') === 1 || getCol(row, 'verified') === '1',
       paid: getCol(row, 'paidStatus') === 1 || getCol(row, 'paidStatus') === '1',
       categories: categoriesRaw ? categoriesRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
-      docid: getCol(row, 'docid') || '',
-      url: weburl ? (weburl.startsWith('http') ? weburl : `https://www.justdial.com/${weburl}`) : ''
+      docid: docid,
+      url: weburl ? (weburl.startsWith('http') ? weburl : `https://www.justdial.com/${weburl}`) : (docid ? `https://www.justdial.com/${citySlug}/Biz/${docid.replace(/\./g, '-')}_BZDET` : '')
     };
   });
 
   return {
     total,
-    listings
+    listings,
+    nextdocid: listData.nextdocid || ''
   };
+}
+
+/**
+ * Step 3: Fetches SSR detail page for a specific docid
+ * Extracts verified merchant emails, contact persons, unmasked phone numbers, and full addresses
+ */
+export async function fetchDocidDetail(city, docid, proxyUrl = null) {
+  if (!docid) return null;
+  const citySlug = slugify(city);
+  const cleanDocid = String(docid).replace(/\./g, '-');
+  const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/Biz/${encodeURIComponent(cleanDocid)}_BZDET`;
+  const dispatcher = getDispatcher(proxyUrl);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fetchOptions = {
+        headers: getHeaders(),
+        redirect: 'follow',
+        signal: AbortSignal.timeout(8000)
+      };
+      if (dispatcher) fetchOptions.dispatcher = dispatcher;
+
+      const res = await fetch(url, fetchOptions);
+      if (res.status === 403 || res.status === 429) {
+        if (attempt === 0) {
+          await sleep(500);
+          continue;
+        }
+        return null;
+      }
+      if (!res.ok) return null;
+
+      const html = await res.text();
+      const nextData = extractNextData(html);
+      if (!nextData) return null;
+
+      const inner = nextData.props?.pageProps?.results?.results || {};
+      if (!inner.name && !inner.comp_name && !inner.compName) return null;
+
+      let phone = cleanPhoneNumber(inner.VNumber) || cleanPhoneNumber(inner.mobile) || cleanPhoneNumber(inner.phone) || cleanPhoneNumber(inner.contact);
+      let whatsappNum = null;
+      if (inner.msg_num) {
+        try {
+          const parsed = typeof inner.msg_num === 'string' ? JSON.parse(inner.msg_num) : inner.msg_num;
+          const wup = parsed?.wup?.[0];
+          if (wup) {
+            const cleanWup = cleanPhoneNumber(wup);
+            if (cleanWup) {
+              whatsappNum = cleanWup;
+              if (!phone) phone = cleanWup;
+            }
+          }
+        } catch (e) {}
+      }
+
+      const rawWp = Array.isArray(inner.wpnumber) ? inner.wpnumber[0] : inner.wpnumber;
+      const explicitWp = cleanPhoneNumber(rawWp);
+      const whatsapp = explicitWp || whatsappNum || phone;
+      const whatsappLink = whatsapp ? `https://wa.me/91${whatsapp}` : null;
+      const email = cleanEmail(inner.email);
+      const contactPerson = inner.contactperson ? String(inner.contactperson).trim() : null;
+
+      let website = '';
+      if (inner.website && typeof inner.website === 'string' && !inner.website.includes('justdial')) {
+        const rawWeb = inner.website.split(',')[0].trim();
+        if (rawWeb) website = rawWeb.startsWith('http') ? rawWeb : `https://${rawWeb}`;
+      }
+
+      const ratingRaw = inner.rating || inner.comprating;
+      const reviewsRaw = inner.totalReviews || inner.totJdReviews;
+
+      let categories = [];
+      if (Array.isArray(inner.AlsoListedIn)) {
+        categories = inner.AlsoListedIn.map(s => (typeof s === 'object' && s ? (s.category || s.categoryln || '') : String(s)).trim()).filter(Boolean);
+      } else if (typeof inner.AlsoListedIn === 'string') {
+        categories = inner.AlsoListedIn.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
+      const fullAddress = inner.address || [inner.building, inner.street, inner.area, inner.city, inner.pincode].filter(Boolean).join(', ');
+
+      return {
+        name: inner.name || inner.comp_name || inner.compName || '',
+        phone: phone || '',
+        raw_phone: inner.VNumber || inner.mobile || '',
+        whatsapp: whatsapp || '',
+        whatsapp_link: whatsappLink,
+        email: email,
+        contact_person: contactPerson,
+        source: 'justdial',
+        website: website,
+        rating: ratingRaw ? parseFloat(ratingRaw) : null,
+        reviews: reviewsRaw ? parseInt(String(reviewsRaw).replace(/\D/g, ''), 10) : 0,
+        address: fullAddress,
+        area: inner.area || '',
+        city: inner.city || city,
+        pincode: inner.pincode ? String(inner.pincode).trim() : '',
+        lat: inner.complat || inner.startlat || '',
+        lon: inner.complong || inner.startlong || '',
+        verified: inner.verified === 1 || inner.verified === '1' || inner.verified === true,
+        paid: inner.paidstatus === 1 || inner.paidstatus === '1' || inner.paidstatus === true,
+        categories: categories,
+        docid: inner.docid || cleanDocid,
+        url: url
+      };
+    } catch (err) {
+      if (attempt === 0) {
+        await sleep(500);
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
  * Concurrently enrich Justdial listings with verified merchant emails and contact persons from SSR detail pages
  */
-export async function enrichJustdialLeadsWithEmails(leads, { maxEnrich = 20, concurrency = 5, proxyUrl = null } = {}) {
+export async function enrichJustdialLeadsWithEmails(leads, { maxEnrich = 40, concurrency = 10, proxyUrl = null } = {}) {
   const targetLeads = leads.slice(0, maxEnrich);
   const dispatcher = getDispatcher(proxyUrl);
 
@@ -276,22 +483,40 @@ export async function enrichJustdialLeadsWithEmails(leads, { maxEnrich = 20, con
         if (!res.ok) return;
 
         const html = await res.text();
-        const emailMatch = html.match(/"email":"([^"]+)"/);
-        if (emailMatch && emailMatch[1]) {
-          const validEmail = cleanEmail(emailMatch[1]);
-          if (validEmail) lead.email = validEmail;
-        }
-
-        const cpMatch = html.match(/"contactperson":"([^"]+)"/);
-        if (cpMatch && cpMatch[1]) {
-          lead.contact_person = cpMatch[1].trim();
-        }
-
-        const webMatch = html.match(/"website":"([^"]+)"/);
-        if (webMatch && webMatch[1] && !lead.website) {
-          const rawWeb = webMatch[1].split(',')[0].trim();
-          if (rawWeb && !rawWeb.includes('justdial')) {
-            lead.website = rawWeb.startsWith('http') ? rawWeb : `https://${rawWeb}`;
+        const nextData = extractNextData(html);
+        if (nextData) {
+          const inner = nextData.props?.pageProps?.results?.results || {};
+          if (inner.email) {
+            const vEmail = cleanEmail(inner.email);
+            if (vEmail) lead.email = vEmail;
+          }
+          if (inner.contactperson && !lead.contact_person) {
+            lead.contact_person = String(inner.contactperson).trim();
+          }
+          if (!lead.phone) {
+            const p = cleanPhoneNumber(inner.VNumber) || cleanPhoneNumber(inner.mobile);
+            if (p) {
+              lead.phone = p;
+              if (!lead.whatsapp) {
+                lead.whatsapp = p;
+                lead.whatsapp_link = `https://wa.me/91${p}`;
+              }
+            }
+          }
+          if (!lead.website && inner.website && !inner.website.includes('justdial')) {
+            const rawWeb = inner.website.split(',')[0].trim();
+            if (rawWeb) lead.website = rawWeb.startsWith('http') ? rawWeb : `https://${rawWeb}`;
+          }
+        } else {
+          // Fast fallback regex
+          const emailMatch = html.match(/"email":"([^"]+)"/);
+          if (emailMatch && emailMatch[1]) {
+            const validEmail = cleanEmail(emailMatch[1]);
+            if (validEmail) lead.email = validEmail;
+          }
+          const cpMatch = html.match(/"contactperson":"([^"]+)"/);
+          if (cpMatch && cpMatch[1] && !lead.contact_person) {
+            lead.contact_person = cpMatch[1].trim();
           }
         }
       } catch (err) {
@@ -304,7 +529,7 @@ export async function enrichJustdialLeadsWithEmails(leads, { maxEnrich = 20, con
 }
 
 /**
- * High-level search function: Resolves category, paginates, deduplicates, and limits
+ * High-level search function: Resolves category, expands multi-area when limit > 50 or limit=max, deduplicates, and enriches
  */
 export async function searchJustdial(options = {}) {
   const startTime = Date.now();
@@ -328,39 +553,22 @@ export async function searchJustdial(options = {}) {
   const isMaxLimit = typeof limit === 'string' && (limit.toLowerCase() === 'max' || limit.toLowerCase() === 'all');
   const maxLimit = isMaxLimit ? 1000 : (limit ? Math.min(Math.max(1, parseInt(limit, 10) || 50), 1000) : 50);
 
-  // 2. Determine starting page (default: 1)
-  const startPage = page ? Math.max(1, parseInt(page, 10) || 1) : 1;
-
-  // 3. Determine how many pages to iterate
-  let totalPagesToFetch;
-  if (pages) {
-    totalPagesToFetch = Math.min(Math.max(1, parseInt(pages, 10) || 1), 50);
-  } else if (isMaxLimit) {
-    totalPagesToFetch = 30; // Up to 300 leads across 30 NCT pages
-  } else if (limit) {
-    totalPagesToFetch = Math.min(Math.ceil(maxLimit / 10), 30);
-  } else {
-    totalPagesToFetch = 3;
-  }
-
-  const endPage = startPage + totalPagesToFetch - 1;
-
+  // 2. Relay delegation if configured
   if (process.env.RELAY_URL && !options._relayed && !proxy) {
     try {
       const relayParams = new URLSearchParams({
         city,
         query,
         ...(page && { page }),
-        pages: totalPagesToFetch,
         limit: isMaxLimit ? 'max' : maxLimit
       });
-      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/search?${relayParams.toString()}`;
+      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/search?source=justdial&${relayParams.toString()}`;
       const relayResp = await fetch(relayUrl, {
         headers: {
           'ngrok-skip-browser-warning': 'true',
           'User-Agent': 'Justdial-API-Gateway/1.0'
         },
-        signal: AbortSignal.timeout(60000)
+        signal: AbortSignal.timeout(90000)
       });
       if (relayResp.ok) {
         const json = await relayResp.json();
@@ -380,18 +588,202 @@ export async function searchJustdial(options = {}) {
     }
   }
 
-  // 1. Resolve category & ncatid
+  // 3. Resolve category & ncatid
   const resolution = await resolveCategory(city, query, proxy);
   if (!resolution.ncatid) {
     throw new Error(`Could not resolve a valid category ID (ncatid) for "${query}" in "${city}".`);
   }
 
   const allLeads = [];
-  const seenIds = new Set();
+  const seenKeys = new Set();
   let totalAvailable = 0;
+
+  // 4. Exhaustive Multi-Area Harvesting Mode when limit > 50 or limit === 'max'
+  if (isMaxLimit || maxLimit > 50) {
+    const areas = getCityAreas(resolution.city || city);
+    const collectedDocids = new Set();
+    const directLeads = [];
+
+    // Query canonical base NCT page first
+    try {
+      const basePage = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, 1, proxy);
+      if (basePage.total > totalAvailable) totalAvailable = basePage.total;
+      for (const lead of basePage.listings) {
+        const key = lead.docid || lead.phone || lead.name;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          directLeads.push(lead);
+        }
+      }
+      if (basePage.nextdocid) {
+        basePage.nextdocid.split(',').filter(Boolean).forEach(id => {
+          const cleanId = id.replace(/\./g, '-');
+          if (!seenKeys.has(cleanId)) collectedDocids.add(cleanId);
+        });
+      }
+    } catch (e) {}
+
+    // Concurrently harvest area endpoints to canvas the metropolitan area
+    const areaBatchSize = 6;
+    for (let i = 0; i < areas.length; i += areaBatchSize) {
+      if (!isMaxLimit && collectedDocids.size >= Math.max(maxLimit * 2.5, 300)) break;
+      const areaChunk = areas.slice(i, i + areaBatchSize);
+      await Promise.all(areaChunk.map(async areaName => {
+        try {
+          const areaSlug = slugify(areaName);
+          const areaUrl = `https://www.justdial.com/${encodeURIComponent(resolution.city)}/${encodeURIComponent(resolution.search)}-in-${encodeURIComponent(areaSlug)}/nct-${resolution.ncatid}`;
+          const dispatcher = getDispatcher(proxy);
+          const fetchOptions = {
+            headers: getHeaders(),
+            redirect: 'follow',
+            signal: AbortSignal.timeout(10000)
+          };
+          if (dispatcher) fetchOptions.dispatcher = dispatcher;
+
+          const res = await fetch(areaUrl, fetchOptions);
+          if (!res.ok) return;
+
+          const html = await res.text();
+          const nextData = extractNextData(html);
+          if (!nextData) return;
+
+          const ld = nextData.props?.pageProps?.listData;
+          if (!ld) return;
+
+          const numTotal = parseInt(ld.totalNumberofResults, 10) || 0;
+          if (numTotal > totalAvailable) totalAvailable = numTotal;
+
+          // Parse direct listings if present in results.data
+          if (ld.results?.data && ld.results?.columns) {
+            const { data: rows, columns } = ld.results;
+            const colIndex = {};
+            columns.forEach((c, idx) => colIndex[c] = idx);
+            const getCol = (row, name) => {
+              const idx = colIndex[name];
+              return idx !== undefined && row[idx] !== undefined ? row[idx] : null;
+            };
+
+            for (const row of rows) {
+              const rawDocid = getCol(row, 'docid');
+              const cleanDocid = rawDocid ? String(rawDocid).replace(/\./g, '-') : '';
+              const name = getCol(row, 'name');
+              const rawPhone = getCol(row, 'VNumber');
+              const phone = cleanPhoneNumber(rawPhone);
+              const key = cleanDocid || (phone ? `p:${phone}` : null) || (name ? `n:${slugify(name)}` : null);
+              if (key && !seenKeys.has(key)) {
+                seenKeys.add(key);
+                if (cleanDocid) seenKeys.add(cleanDocid);
+                const rawWp = getCol(row, 'wpnumber');
+                const whatsapp = cleanPhoneNumber(Array.isArray(rawWp) ? rawWp[0] : rawWp) || phone;
+                const categoriesRaw = getCol(row, 'type');
+                directLeads.push({
+                  name: name || '',
+                  phone: phone,
+                  raw_phone: rawPhone || '',
+                  whatsapp: whatsapp,
+                  whatsapp_link: whatsapp ? `https://wa.me/91${whatsapp}` : null,
+                  email: null,
+                  contact_person: null,
+                  source: 'justdial',
+                  website: '',
+                  rating: getCol(row, 'compRating') ? parseFloat(getCol(row, 'compRating')) : null,
+                  reviews: getCol(row, 'totalReviews') ? parseInt(String(getCol(row, 'totalReviews')).replace(/\D/g, ''), 10) : 0,
+                  address: getCol(row, 'NewAddress') || '',
+                  area: getCol(row, 'area') || areaName,
+                  city: getCol(row, 'city') || resolution.city,
+                  pincode: getCol(row, 'pincode') || '',
+                  lat: getCol(row, 'lat') || '',
+                  lon: getCol(row, 'lon') || '',
+                  verified: getCol(row, 'verified') === 1 || getCol(row, 'verified') === '1',
+                  paid: getCol(row, 'paidStatus') === 1 || getCol(row, 'paidStatus') === '1',
+                  categories: categoriesRaw ? categoriesRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+                  docid: cleanDocid || rawDocid || '',
+                  url: `https://www.justdial.com/${slugify(resolution.city)}/Biz/${cleanDocid || rawDocid}_BZDET`
+                });
+              }
+            }
+          }
+
+          // Capture all nextdocid entries
+          if (ld.nextdocid) {
+            const ids = String(ld.nextdocid).split(',').filter(Boolean);
+            ids.forEach(id => {
+              const cleanId = id.replace(/\./g, '-');
+              if (!seenKeys.has(cleanId) && !collectedDocids.has(cleanId)) {
+                collectedDocids.add(cleanId);
+              }
+            });
+          }
+        } catch (e) {}
+      }));
+      await sleep(100);
+    }
+
+    // Add all direct leads harvested from area search pages
+    allLeads.push(...directLeads);
+
+    // Filter only unvisited docids
+    const unvisitedDocids = Array.from(collectedDocids).filter(id => !seenKeys.has(id));
+    const targetLeadCount = isMaxLimit ? (allLeads.length + unvisitedDocids.length) : Math.min(maxLimit, allLeads.length + unvisitedDocids.length);
+
+    // Concurrently fetch detail pages with concurrency 12 and 80ms pacing until target count is satisfied
+    const detailConcurrency = 12;
+    for (let i = 0; i < unvisitedDocids.length; i += detailConcurrency) {
+      if (allLeads.length >= targetLeadCount) break;
+      const chunk = unvisitedDocids.slice(i, i + detailConcurrency);
+      const detailedResults = await Promise.all(chunk.map(id => fetchDocidDetail(resolution.city, id, proxy)));
+      for (const lead of detailedResults) {
+        if (lead) {
+          const cleanDocid = (lead.docid || '').replace(/\./g, '-');
+          const key = cleanDocid || (lead.phone ? `p:${lead.phone}` : null) || (lead.name ? `n:${slugify(lead.name)}` : null);
+          if (key && !seenKeys.has(key)) {
+            seenKeys.add(key);
+            if (cleanDocid) seenKeys.add(cleanDocid);
+            allLeads.push(lead);
+            if (allLeads.length >= targetLeadCount) break;
+          }
+        }
+      }
+      await sleep(80);
+    }
+
+    // Also enrich direct leads with merchant emails if requested
+    const shouldEnrichDirect = enrich_emails !== false;
+    if (shouldEnrichDirect && allLeads.length > 0) {
+      const leadsWithoutEmail = allLeads.filter(l => !l.email).slice(0, isMaxLimit ? 60 : 30);
+      if (leadsWithoutEmail.length > 0) {
+        await enrichJustdialLeadsWithEmails(leadsWithoutEmail, { maxEnrich: leadsWithoutEmail.length, concurrency: 15, proxyUrl: proxy });
+      }
+    }
+
+    return {
+      query: {
+        city: resolution.city,
+        search: resolution.search,
+        ncatid: resolution.ncatid,
+        mode: 'multi_area_exhaustive',
+        areas_canvassed: areas.length,
+        limit: isMaxLimit ? 'max' : maxLimit
+      },
+      meta: {
+        total_available: Math.max(totalAvailable, allLeads.length),
+        count: allLeads.length,
+        with_phone_count: allLeads.filter(l => !!l.phone).length,
+        with_whatsapp_count: allLeads.filter(l => !!l.whatsapp).length,
+        with_email_count: allLeads.filter(l => !!l.email).length,
+        with_contact_person_count: allLeads.filter(l => !!l.contact_person).length,
+        execution_time_ms: Date.now() - startTime
+      },
+      results: allLeads
+    };
+  }
+
+  // 5. Standard Fast Path for limit <= 50 and single page queries
+  const startPage = page ? Math.max(1, parseInt(page, 10) || 1) : 1;
+  const totalPagesToFetch = pages ? Math.min(Math.max(1, parseInt(pages, 10) || 1), 10) : Math.min(Math.ceil(maxLimit / 10), 5);
+  const endPage = startPage + totalPagesToFetch - 1;
   let pagesFetched = 0;
 
-  // 2. Fetch pages starting from startPage up to endPage
   for (let p = startPage; p <= endPage; p++) {
     try {
       const pageData = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, p, proxy);
@@ -400,14 +792,12 @@ export async function searchJustdial(options = {}) {
         totalAvailable = pageData.total;
       }
 
-      if (pageData.listings.length === 0) {
-        break;
-      }
+      if (pageData.listings.length === 0) break;
 
       for (const lead of pageData.listings) {
         const dedupKey = lead.docid || lead.phone || lead.name;
-        if (!seenIds.has(dedupKey)) {
-          seenIds.add(dedupKey);
+        if (!seenKeys.has(dedupKey)) {
+          seenKeys.add(dedupKey);
           allLeads.push(lead);
           if (allLeads.length >= maxLimit) break;
         }
@@ -418,17 +808,15 @@ export async function searchJustdial(options = {}) {
         await sleep(delayMs);
       }
     } catch (err) {
-      if (allLeads.length === 0) {
-        throw err;
-      }
+      if (allLeads.length === 0) throw err;
       break;
     }
   }
 
-  // 3. Enrich top leads with direct merchant emails & contact person from detail SSR
-  const shouldEnrich = enrich_emails !== false && (has_email || enrich_emails === true || maxLimit <= 30 || isMaxLimit);
+  // Enrich top leads with direct merchant emails & contact person from detail SSR
+  const shouldEnrich = enrich_emails !== false && (has_email || enrich_emails === true || maxLimit <= 30);
   if (shouldEnrich && allLeads.length > 0) {
-    const enrichLimit = isMaxLimit ? 25 : Math.min(allLeads.length, 30);
+    const enrichLimit = Math.min(allLeads.length, 30);
     await enrichJustdialLeadsWithEmails(allLeads, { maxEnrich: enrichLimit, proxyUrl: proxy });
   }
 
@@ -440,7 +828,8 @@ export async function searchJustdial(options = {}) {
       start_page: startPage,
       end_page: startPage + pagesFetched - 1,
       pages_fetched: pagesFetched,
-      limit: isMaxLimit ? 'max' : maxLimit
+      mode: 'standard',
+      limit: maxLimit
     },
     meta: {
       total_available: totalAvailable,
@@ -448,9 +837,9 @@ export async function searchJustdial(options = {}) {
       with_phone_count: allLeads.filter(l => !!l.phone).length,
       with_whatsapp_count: allLeads.filter(l => !!l.whatsapp).length,
       with_email_count: allLeads.filter(l => !!l.email).length,
+      with_contact_person_count: allLeads.filter(l => !!l.contact_person).length,
       execution_time_ms: Date.now() - startTime
     },
     results: allLeads
   };
 }
-

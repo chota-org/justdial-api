@@ -291,6 +291,13 @@ app.get('/api/search', async (req, res) => {
         success: true,
         ...result,
         total_results: resultsList.length,
+        benchmark: {
+          [source]: {
+            count: resultsList.length,
+            duration_ms: result.meta?.execution_time_ms || 0
+          },
+          total_duration_ms: result.meta?.execution_time_ms || 0
+        },
         results: resultsList
       });
     }
