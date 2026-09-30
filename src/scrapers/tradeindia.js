@@ -1,7 +1,7 @@
 // TradeIndia Scraper: High-density B2B suppliers, manufacturers and exporters
 // Extracts Next.js SSR state (__NEXT_DATA__) with 28 listings per page.
 
-import { sanitizeQuery, normalizeCity } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
 
 export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
   const normCity = normalizeCity(city);
@@ -52,11 +52,17 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
       const website = domain ? (domain.startsWith('http') ? domain : `https://${domain}`) : '';
       const profileUrl = item.profile_url ? `https://www.tradeindia.com${item.profile_url}` : url;
 
+      const rawPhone = item.display_original_mobile || item.default_mobile || item.phone_no || item.mobile || item.phone || '';
+      const phone = cleanPhone(rawPhone);
+      const isMobile = /^[6-9]\d{9}$/.test(phone);
+      const whatsapp = isMobile ? phone : '';
+      const whatsapp_link = whatsapp ? `https://wa.me/91${whatsapp}` : '';
+
       leads.push({
         name,
-        phone: item.mobile || item.phone || '',
-        whatsapp: '',
-        whatsapp_link: '',
+        phone,
+        whatsapp,
+        whatsapp_link,
         email: 'N/A',
         source: 'tradeindia',
         rating: item.rating ? parseFloat(item.rating) : null,

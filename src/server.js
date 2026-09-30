@@ -9,6 +9,7 @@ import {
   resolveCategory,
   SOURCES
 } from './scrapers/index.js';
+import { normalizeCity, sanitizeQuery, detectIntent } from './utils/normalizer.js';
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -201,7 +202,22 @@ app.get('/api/debug', async (req, res) => {
 
 // Primary Search API endpoint: Multi-platform or single platform
 app.get('/api/search', async (req, res) => {
-  const { city, query, source = 'all', page, pages, limit, proxy, relay } = req.query;
+  const {
+    city,
+    query,
+    source = 'all',
+    page,
+    pages,
+    limit,
+    proxy,
+    relay,
+    has_phone,
+    only_contacts,
+    has_whatsapp,
+    verified,
+    verified_only,
+    min_rating
+  } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -211,6 +227,13 @@ app.get('/api/search', async (req, res) => {
   }
 
   const isRelayed = req.headers['user-agent']?.includes('Vyapar-API-Gateway') || req.headers['user-agent']?.includes('Justdial-API-Gateway');
+  const filterOptions = {
+    has_phone: has_phone === 'true' || only_contacts === 'true',
+    only_contacts: has_phone === 'true' || only_contacts === 'true',
+    has_whatsapp: has_whatsapp === 'true',
+    verified_only: verified === 'true' || verified_only === 'true',
+    min_rating: min_rating ? parseFloat(min_rating) : null
+  };
 
   try {
     // If a specific individual source was requested
@@ -226,9 +249,25 @@ app.get('/api/search', async (req, res) => {
         _relayed: isRelayed
       });
 
+      let resultsList = result.results || [];
+      if (filterOptions.has_phone) {
+        resultsList = resultsList.filter(l => l.phone && l.phone.length === 10);
+      }
+      if (filterOptions.has_whatsapp) {
+        resultsList = resultsList.filter(l => l.whatsapp && l.whatsapp.length === 10);
+      }
+      if (filterOptions.verified_only) {
+        resultsList = resultsList.filter(l => l.verified);
+      }
+      if (filterOptions.min_rating) {
+        resultsList = resultsList.filter(l => (l.rating || 0) >= filterOptions.min_rating);
+      }
+
       return res.json({
         success: true,
-        ...result
+        ...result,
+        total_results: resultsList.length,
+        results: resultsList
       });
     }
 
@@ -242,7 +281,8 @@ app.get('/api/search', async (req, res) => {
       limit,
       proxy,
       relay,
-      _relayed: isRelayed
+      _relayed: isRelayed,
+      ...filterOptions
     });
 
     res.json({
@@ -297,7 +337,22 @@ app.get('/api/:platform(justdial|grotal|indiamart|tradeindia|sulekha)/search', a
 
 // Unified Export directly as CSV download
 app.get('/api/export/csv', async (req, res) => {
-  const { city, query, source = 'all', page, pages, limit, proxy, relay } = req.query;
+  const {
+    city,
+    query,
+    source = 'all',
+    page,
+    pages,
+    limit,
+    proxy,
+    relay,
+    has_phone,
+    only_contacts,
+    has_whatsapp,
+    verified,
+    verified_only,
+    min_rating
+  } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -305,6 +360,14 @@ app.get('/api/export/csv', async (req, res) => {
       error: 'Missing required query parameters: "city" and "query"'
     });
   }
+
+  const filterOptions = {
+    has_phone: has_phone === 'true' || only_contacts === 'true',
+    only_contacts: has_phone === 'true' || only_contacts === 'true',
+    has_whatsapp: has_whatsapp === 'true',
+    verified_only: verified === 'true' || verified_only === 'true',
+    min_rating: min_rating ? parseFloat(min_rating) : null
+  };
 
   try {
     const isRelayed = req.headers['user-agent']?.includes('Vyapar-API-Gateway') || req.headers['user-agent']?.includes('Justdial-API-Gateway');
@@ -322,6 +385,18 @@ app.get('/api/export/csv', async (req, res) => {
         _relayed: isRelayed
       });
       leads = data.results || [];
+      if (filterOptions.has_phone) {
+        leads = leads.filter(l => l.phone && l.phone.length === 10);
+      }
+      if (filterOptions.has_whatsapp) {
+        leads = leads.filter(l => l.whatsapp && l.whatsapp.length === 10);
+      }
+      if (filterOptions.verified_only) {
+        leads = leads.filter(l => l.verified);
+      }
+      if (filterOptions.min_rating) {
+        leads = leads.filter(l => (l.rating || 0) >= filterOptions.min_rating);
+      }
     } else {
       const data = await searchAllSources({
         city,
@@ -332,7 +407,8 @@ app.get('/api/export/csv', async (req, res) => {
         limit,
         proxy,
         relay,
-        _relayed: isRelayed
+        _relayed: isRelayed,
+        ...filterOptions
       });
       leads = data.results || [];
     }
@@ -387,6 +463,31 @@ app.get('/api/export/csv', async (req, res) => {
       error: err.message
     });
   }
+});
+
+// Diagnostic & Query Normalization endpoint
+app.get('/api/normalize', (req, res) => {
+  const { city = '', query = '' } = req.query;
+  if (!query && !city) {
+    return res.status(400).json({
+      success: false,
+      error: 'At least one of "city" or "query" parameter is required.'
+    });
+  }
+
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+  const intent = detectIntent(query);
+
+  res.json({
+    success: true,
+    input: { city, query },
+    normalized: {
+      city: normCity,
+      query: cleanQ,
+      intent
+    }
+  });
 });
 
 // Global 404

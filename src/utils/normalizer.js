@@ -95,3 +95,30 @@ export function slugify(text) {
     .replace(/[\s_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
+
+/**
+ * Detect commercial intent to prioritize optimal directory routing
+ */
+export function detectIntent(rawQuery) {
+  if (!rawQuery || typeof rawQuery !== 'string') return 'general';
+  const q = rawQuery.toLowerCase();
+
+  const b2bKeywords = [
+    'manufacturer', 'factory', 'wholesaler', 'wholesale', 'supplier', 'exporter',
+    'distributor', 'industrial', 'fabrication', 'machinery', 'chemical', 'polymer',
+    'rubber', 'steel', 'pipes', 'valves', 'pumps', 'packaging', 'bulk', 'oem',
+    'raw material', 'equipments', 'instruments', 'hardware'
+  ];
+
+  const serviceKeywords = [
+    'caterer', 'catering', 'wedding', 'event', 'photographer', 'photography',
+    'pest control', 'interior designer', 'repair', 'mechanic', 'plumber',
+    'electrician', 'packers', 'movers', 'cleaning', 'carpenter', 'salon',
+    'spa', 'doctor', 'clinic', 'dentist', 'hospital', 'pet shop', 'vet',
+    'tuition', 'coaching', 'astrologer', 'advocate', 'lawyer'
+  ];
+
+  if (b2bKeywords.some(k => q.includes(k))) return 'b2b_industrial';
+  if (serviceKeywords.some(k => q.includes(k))) return 'local_services';
+  return 'general';
+}

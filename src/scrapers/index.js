@@ -38,9 +38,9 @@ export const SOURCES = {
   tradeindia: {
     id: 'tradeindia',
     name: 'TradeIndia',
-    description: 'Major B2B directory with verified manufacturers, exporters, private domain websites, and GST details',
-    unmasked_phones: false,
-    whatsapp_ready: false,
+    description: 'Major B2B directory with verified manufacturers, exporters, direct mobile contacts, and GST details',
+    unmasked_phones: true,
+    whatsapp_ready: true,
     requires_relay: false,
     rate_safe: true
   },
@@ -55,7 +55,7 @@ export const SOURCES = {
   }
 };
 
-import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
+import { sanitizeQuery, normalizeCity, cleanPhone, detectIntent } from '../utils/normalizer.js';
 
 /**
  * Execute search for a single designated source
@@ -99,7 +99,12 @@ export async function searchAllSources(options = {}) {
     pages = null,
     proxy = null,
     relay = null,
-    _relayed = false
+    _relayed = false,
+    has_phone = false,
+    only_contacts = false,
+    has_whatsapp = false,
+    verified_only = false,
+    min_rating = null
   } = options;
 
   if (!city || !query) {
@@ -225,8 +230,26 @@ export async function searchAllSources(options = {}) {
     }
   }
 
+  const intent = detectIntent(query);
+
+  let filteredLeads = Array.from(leadMap.values());
+
+  if (has_phone || only_contacts) {
+    filteredLeads = filteredLeads.filter(l => l.phone && l.phone.length === 10);
+  }
+  if (has_whatsapp) {
+    filteredLeads = filteredLeads.filter(l => l.whatsapp && l.whatsapp.length === 10);
+  }
+  if (verified_only) {
+    filteredLeads = filteredLeads.filter(l => l.verified);
+  }
+  if (min_rating && !isNaN(parseFloat(min_rating))) {
+    const minR = parseFloat(min_rating);
+    filteredLeads = filteredLeads.filter(l => (l.rating || 0) >= minR);
+  }
+
   // Sort leads: verified & phone-ready first, then by rating
-  const mergedLeads = Array.from(leadMap.values()).sort((a, b) => {
+  const mergedLeads = filteredLeads.sort((a, b) => {
     const aHasPhone = a.phone && a.phone.length === 10 ? 1 : 0;
     const bHasPhone = b.phone && b.phone.length === 10 ? 1 : 0;
     if (aHasPhone !== bHasPhone) return bHasPhone - aHasPhone;
@@ -244,6 +267,7 @@ export async function searchAllSources(options = {}) {
     city: normCity,
     query: cleanQ,
     original_query: query,
+    intent,
     requested_sources: validSources,
     sources_status: sourceStats,
     total_deduplicated: finalResults.length,
