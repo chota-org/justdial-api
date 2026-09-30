@@ -1,0 +1,29 @@
+{
+  "name": "justdial-api",
+  "version": "1.0.0",
+  "description": "High-performance reverse-engineered Justdial REST API for business lead generation",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node test/test_scraper.js"
+  },
+  "keywords": [
+    "justdial",
+    "scraper",
+    "leads",
+    "api",
+    "b2b",
+    "marketing",
+    "business-directory"
+  ],
+  "author": "chota-org",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0"
+  }
+}

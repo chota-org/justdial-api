@@ -1,0 +1,215 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import { searchJustdial, resolveCategory } from './scraper/justdial.js';
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.use(helmet({
+  contentSecurityPolicy: false
+}));
+app.use(cors());
+app.use(express.json());
+app.use(morgan('combined'));
+
+// Helper to escape CSV values
+function escapeCsv(val) {
+  if (val === null || val === undefined) return '';
+  const str = String(val).replace(/"/g, '""');
+  return /[,\n"]/.test(str) ? `"${str}"` : str;
+}
+
+// Root Documentation Route
+app.get('/', (req, res) => {
+  res.json({
+    name: 'Justdial REST API',
+    description: 'High-performance reverse-engineered Justdial business directory lead API',
+    version: '1.0.0',
+    status: 'online',
+    endpoints: {
+      search: {
+        method: 'GET',
+        path: '/api/search',
+        params: {
+          city: 'Required. City name (e.g. Mumbai, Delhi, Bangalore)',
+          query: 'Required. Category or business keyword (e.g. Caterers, Solar-Panel-Dealers)',
+          pages: 'Optional. Number of pages to scrape (1 to 10, default: 3)',
+          limit: 'Optional. Maximum leads to return (1 to 200, default: 50)'
+        },
+        example: '/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2'
+      },
+      export_csv: {
+        method: 'GET',
+        path: '/api/export/csv',
+        params: {
+          city: 'Required. City name',
+          query: 'Required. Category or business keyword',
+          pages: 'Optional. Number of pages (default: 3)'
+        },
+        example: '/api/export/csv?city=Delhi&query=Caterers&pages=2'
+      },
+      resolve: {
+        method: 'GET',
+        path: '/api/resolve',
+        params: {
+          city: 'City name',
+          query: 'Category keyword'
+        },
+        example: '/api/resolve?city=Bangalore&query=Packers-And-Movers'
+      },
+      health: {
+        method: 'GET',
+        path: '/health'
+      }
+    }
+  });
+});
+
+// Health check endpoint for Render / monitoring
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Resolve category & ncatid
+app.get('/api/resolve', async (req, res) => {
+  const { city, query } = req.query;
+  if (!city || !query) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required query parameters: "city" and "query"'
+    });
+  }
+
+  try {
+    const meta = await resolveCategory(city, query);
+    res.json({
+      success: true,
+      data: meta
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Primary Search API endpoint
+app.get('/api/search', async (req, res) => {
+  const { city, query, pages, limit } = req.query;
+
+  if (!city || !query) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required query parameters: "city" and "query". Example: /api/search?city=Mumbai&query=Caterers'
+    });
+  }
+
+  try {
+    const result = await searchJustdial({
+      city,
+      query,
+      pages,
+      limit
+    });
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Export directly as CSV download
+app.get('/api/export/csv', async (req, res) => {
+  const { city, query, pages, limit } = req.query;
+
+  if (!city || !query) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required query parameters: "city" and "query"'
+    });
+  }
+
+  try {
+    const { results } = await searchJustdial({
+      city,
+      query,
+      pages: pages || 3,
+      limit: limit || 100
+    });
+
+    const headers = [
+      'Name',
+      'Phone',
+      'WhatsApp',
+      'Rating',
+      'Reviews',
+      'Address',
+      'Area',
+      'City',
+      'Pincode',
+      'Latitude',
+      'Longitude',
+      'Verified',
+      'Paid',
+      'Categories',
+      'DocID',
+      'Justdial_URL'
+    ];
+
+    const rows = results.map(item => [
+      escapeCsv(item.name),
+      escapeCsv(item.phone),
+      escapeCsv(item.whatsapp),
+      escapeCsv(item.rating),
+      escapeCsv(item.reviews),
+      escapeCsv(item.address),
+      escapeCsv(item.area),
+      escapeCsv(item.city),
+      escapeCsv(item.pincode),
+      escapeCsv(item.lat),
+      escapeCsv(item.lon),
+      escapeCsv(item.verified ? 'Yes' : 'No'),
+      escapeCsv(item.paid ? 'Yes' : 'No'),
+      escapeCsv(item.categories.join('; ')),
+      escapeCsv(item.docid),
+      escapeCsv(item.url)
+    ].join(','));
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const filename = `${city}_${query}_leads.csv`.toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvContent);
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// Global 404
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found. Visit GET / for API documentation.'
+  });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Justdial API server running on port ${PORT}`);
+});

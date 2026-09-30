@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  justdial-api:
+    build: .
+    container_name: justdial-api
+    ports:
+      - "10000:10000"
+    environment:
+      - PORT=10000
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:10000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
