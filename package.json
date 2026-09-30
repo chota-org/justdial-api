@@ -1,7 +1,7 @@
 {
-  "name": "justdial-api",
-  "version": "1.0.0",
-  "description": "High-performance reverse-engineered Justdial REST API for business lead generation",
+  "name": "vyapar-leads-api",
+  "version": "2.0.0",
+  "description": "High-performance multi-platform Indian business lead aggregator (Justdial, IndiaMART, Grotal, TradeIndia, Sulekha) with unmasked phone numbers and WhatsApp links",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
@@ -10,12 +10,16 @@
     "test": "node test/test_scraper.js"
   },
   "keywords": [
+    "vyapar-leads",
     "justdial",
+    "indiamart",
+    "grotal",
+    "tradeindia",
+    "sulekha",
     "scraper",
     "leads",
-    "api",
     "b2b",
-    "marketing",
+    "whatsapp-marketing",
     "business-directory"
   ],
   "author": "chota-org",

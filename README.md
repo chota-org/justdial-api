@@ -1,96 +1,81 @@
-# Justdial REST API 🚀
+# Vyapar Leads API 🇮🇳 🚀
 
-A high-performance, reverse-engineered REST API for extracting verified Indian business leads from Justdial — with **unmasked phone numbers, ratings, review counts, full postal addresses, and WhatsApp contact details**.
+High-performance, multi-platform business directory lead aggregator for India. Reverse-engineers and aggregates verified merchant contacts across **Justdial, IndiaMART, Grotal, TradeIndia, and Sulekha** — delivering **unmasked phone numbers, direct WhatsApp links, ratings, addresses, company websites, and trust badges**.
 
-Runs 100% **browserless** via lightweight Node.js HTTP/SSR data extraction. No Puppeteer, no Playwright, no Chromium, and zero headless browser overhead.
+Runs **100% browserless** via lightweight Node.js HTTP/SSR data extraction. No Puppeteer, no Playwright, no Chromium, and zero headless browser overhead.
 
 ---
 
-## ⚡ How It Works (The Reverse-Engineering)
+## ⚡ Supported Platforms & Reverse-Engineering
 
-Standard Justdial search routes (`https://www.justdial.com/{City}/{Category}`) apply Akamai Bot Manager JavaScript challenges and default to client-side rendering (CSR), masking phone numbers behind client-side OTP modals.
-
-However, Justdial's underlying Next.js architecture maintains **Canonical National Category Taxonomy (NCT)** endpoints:
-```text
-https://www.justdial.com/{City}/{Category}/nct-{ncatid}?page={page}
-```
-
-When requested with standard browser navigation headers, Justdial's servers **fully pre-render and hydrate the complete business dataset into the Next.js `__NEXT_DATA__` state**. This contains:
-- `VNumber`: The unmasked, direct contact phone number.
-- `wpnumber`: Direct WhatsApp number where available.
-- `name`: Verified business name.
-- `NewAddress`: Complete physical street address.
-- `compRating` & `totalReviews`: Customer rating & verified review count.
-- `area`, `city`, `pincode`, `lat`, `lon`: Geocoding tags.
-- `verified` & `paidStatus`: Justdial trust indicators.
-
-This API acts as an automated resolver and harvester:
-1. **Resolves** any arbitrary search query and city into the canonical `ncatid` via Next.js metadata.
-2. **Paginates** through canonical NCT endpoints directly over HTTP GET.
-3. **Normalizes, deduplicates, and validates** phone numbers into clean 10-digit mobile contacts ready for campaigns.
+| Platform | Coverage | Phone Unmasking | Direct WhatsApp | Data Architecture | Datacenter Direct |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Justdial** | Local retail & services | ✅ Unmasked (VNumber) | ✅ Direct `wa.me` | Next.js SSR NCT Hydration | Via Relay / Proxy |
+| **Grotal** | Local shops, caterers, services | ✅ Unmasked (10-digit) | ✅ Direct `wa.me` | Schema.org `LocalBusiness` JSON-LD | ✅ 100% Direct |
+| **IndiaMART** | B2B, wholesale, manufacturers | ✅ Unmasked (`data-contact`) | ✅ Direct `wa.me` | Server-rendered Mobile Web cards | ✅ 100% Direct |
+| **TradeIndia** | Manufacturers, exporters, traders | ⚠️ Profile-level / Domains | ⚠️ Company Website | Next.js SSR `__NEXT_DATA__` | ✅ 100% Direct |
+| **Sulekha** | Local services, events, repairs | ✅ Unmasked (Direct lines) | ✅ Direct `wa.me` | Schema.org `ItemList` JSON-LD | Via Relay / Proxy |
 
 ---
 
 ## 📡 API Endpoints
 
-### 1. Search Leads
+### 1. Unified Multi-Platform Search
+Search across multiple directories simultaneously or target specific platforms. Deduplicates by 10-digit phone number and cross-enriches company details.
+
 ```http
-GET /api/search?city={city}&query={query}&pages={pages}&limit={limit}
+GET /api/search?city={city}&query={query}&source={source}&limit={limit}
 ```
 
+#### Query Parameters:
 | Parameter | Type | Required | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `city` | string | **Yes** | — | Target city (e.g. `Mumbai`, `Delhi`, `Bangalore`, `Hyderabad`, `Pune`, `Chennai`) |
-| `query` | string | **Yes** | — | Business category or keyword (e.g. `Caterers`, `Solar-Panel-Dealers`, `Packers-And-Movers`) |
-| `pages` | number | No | `3` | Number of pages to paginate (1 to 10) |
+| `city` | string | **Yes** | — | Target city (e.g. `Delhi`, `Mumbai`, `Bangalore`, `Pune`, `Jaipur`) |
+| `query` | string | **Yes** | — | Business category or keyword (e.g. `Caterers`, `pet shop`, `solar panel`) |
+| `source` | string | No | `all` | `all`, `justdial`, `grotal`, `indiamart`, `tradeindia`, `sulekha`, or comma-separated list |
 | `limit` | number | No | `50` | Maximum deduplicated leads to return (1 to 200) |
+| `page` | number | No | `1` | Specific page number |
 | `api_key` | string | Conditional | — | API key (or pass via `x-api-key` header) if protection is enabled |
 
 #### Example Request:
 ```bash
-# Using header
-curl -H "x-api-key: YOUR_KEY" "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2&limit=20"
-
-# Or using query parameter
-curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2&limit=20&api_key=YOUR_KEY"
+curl -H "x-api-key: jd_sec_9b2e71f4" \
+  "https://justdial-api.onrender.com/api/search?source=all&city=Delhi&query=caterers&limit=50"
 ```
 
 #### Example Response:
 ```json
 {
   "success": true,
-  "query": {
-    "city": "Mumbai",
-    "search": "Solar-Panel-Dealers",
-    "ncatid": "10444071",
-    "pages_requested": 2,
-    "limit": 20
+  "city": "Delhi",
+  "query": "caterers",
+  "requested_sources": ["grotal", "indiamart", "justdial", "tradeindia", "sulekha"],
+  "sources_status": {
+    "grotal": { "success": true, "count": 15 },
+    "indiamart": { "success": true, "count": 10 },
+    "tradeindia": { "success": true, "count": 15 },
+    "sulekha": { "success": true, "count": 15 }
   },
-  "meta": {
-    "total_available": 100,
-    "count": 20,
-    "with_phone_count": 19,
-    "with_whatsapp_count": 2
-  },
+  "total_deduplicated": 50,
   "results": [
     {
-      "name": "Nalanda Inverter AIR Conditioner",
-      "phone": "9845238940",
-      "raw_phone": "09845238940",
-      "whatsapp": null,
-      "rating": 4.9,
-      "reviews": 106,
-      "address": "Near Suruchi Hotel Panvel",
-      "area": "Mcch Society Panvel",
-      "city": "Mumbai",
-      "pincode": "410206",
-      "lat": "18.9902",
-      "lon": "73.1165",
+      "name": "Puri Tent and Caterers",
+      "phone": "9871004420",
+      "whatsapp": "9871004420",
+      "whatsapp_link": "https://wa.me/919871004420",
+      "email": "N/A",
+      "sources": ["grotal"],
+      "primary_source": "grotal",
+      "rating": null,
+      "reviews": 0,
+      "address": "Karol Bagh, Delhi, Delhi",
+      "area": "Karol Bagh",
+      "city": "Delhi",
+      "pincode": "",
+      "website": "",
       "verified": true,
-      "paid": false,
-      "categories": ["Solar Panel Dealers", "Inverter Dealers"],
-      "docid": "022PXX22-XX22-190302143011-Y6F2",
-      "url": "https://www.justdial.com/Navi-Mumbai/Nalanda-Inverter-AIR-Conditioner-Near-Suruchi-Hotel-Panvel/022PXX22-XX22-190302143011-Y6F2_BZDET"
+      "categories": ["caterers"],
+      "url": "https://www.grotal.com/Delhi/Caterers-C44A0P1A0/"
     }
   ]
 }
@@ -98,29 +83,27 @@ curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Solar-Panel
 
 ---
 
-### 2. Export Directly as CSV
-Directly download a CSV formatted file of leads for WhatsApp & Email campaigns:
+### 2. Export Directly as CSV Download
+Instant spreadsheet export ready to import into WhatsApp bulk broadcast tools, Google Sheets, or CRMs.
+
 ```http
-GET /api/export/csv?city={city}&query={query}&pages={pages}&limit={limit}
+GET /api/export/csv?city={city}&query={query}&source={source}&limit={limit}
 ```
 
-#### Example:
 ```bash
-curl -o mumbai_solar_leads.csv "https://justdial-api.onrender.com/api/export/csv?city=Mumbai&query=Solar-Panel-Dealers&pages=3"
+curl -s -H "x-api-key: jd_sec_9b2e71f4" \
+  "https://justdial-api.onrender.com/api/export/csv?city=Delhi&query=solar-panel&source=all&limit=100" \
+  -o delhi_solar_leads.csv
 ```
 
 ---
 
-### 3. Category Metadata Resolver
-Inspect the canonical `ncatid` and search routing for any keyword:
+### 3. List Supported Sources
 ```http
-GET /api/resolve?city={city}&query={query}
+GET /api/sources
 ```
 
-#### Example:
-```bash
-curl "https://justdial-api.onrender.com/api/resolve?city=Bangalore&query=Packers-And-Movers"
-```
+Returns platform capabilities, unmasking status, and connection mode.
 
 ---
 
@@ -128,82 +111,53 @@ curl "https://justdial-api.onrender.com/api/resolve?city=Bangalore&query=Packers
 ```http
 GET /health
 ```
-Returns `{"status": "ok", "uptime": 124.5, "timestamp": "..."}`.
 
 ---
 
-## 🐳 Docker Deployment
+## 🔒 Security & Protection
 
-### Run with Docker:
-```bash
-# Build the Docker image
-docker build -t justdial-api .
-
-# Run the container
-docker run -d -p 10000:10000 --name justdial-api justdial-api
-```
-
-### Run with Docker Compose:
-```bash
-docker compose up -d
-```
-
-Test the running container:
-```bash
-curl http://localhost:10000/health
-curl "http://localhost:10000/api/search?city=Delhi&query=Caterers"
-```
+- **API Key Guard**: Enforced on `/api/*` endpoints via `x-api-key: YOUR_KEY` or `?api_key=YOUR_KEY`. Set `API_KEY` in environment variables.
+- **Express Rate Limiting**: 60 requests/minute per IP window (configurable via `RATE_LIMIT_MAX`).
+- **Helmet**: Hardened HTTP security headers.
+- **Relay Support**: Automated routing via `RELAY_URL` for sources requiring an Indian residential/mobile IP.
 
 ---
 
-## 🛡️ Geo-Bypass: Proxy & Relay Architecture
+## 🛠 Local Development & Docker
 
-Justdial uses Akamai Bot Manager at its edge perimeter, which blocks direct requests originating from foreign cloud datacenter IP ranges (AWS, GCP, Render US/SG) with HTTP 403 Forbidden.
-
-This API includes native, dual-mode architectural support to run globally without blocks:
-
-### 1. Upstream Proxy Support (`PROXY_URL` or `?proxy=`)
-Configure any residential, datacenter, or mobile proxy (HTTP, HTTPS, or SOCKS5):
 ```bash
-# In environment variable
-export PROXY_URL="http://user:pass@proxy-server.com:port"
-
-# Or on a per-request basis
-curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Caterers&proxy=http://proxy-server:port"
-```
-The scraper automatically utilizes `undici.ProxyAgent` with connection pooling.
-
-### 2. Transparent Multi-Region Relay (`RELAY_URL` or `?relay=`)
-When deployed to overseas cloud datacenters (like Render in Oregon or Singapore), the service can automatically route queries through an Indian bridge or local tunnel:
-```bash
-# Set in Render service environment
-RELAY_URL="https://your-indian-relay.example.com"
-```
-When `RELAY_URL` is configured:
-1. Render receives the request at `https://justdial-api.onrender.com`.
-2. Render transparently forwards the request to the Indian relay.
-3. The Indian relay executes the fast browserless SSR scrape directly from an Indian egress IP.
-4. Clean JSON leads are returned back to the caller in ~2 seconds.
-
----
-
-## 🛠️ Local Development
-```bash
-# Clone the repository
+# Clone
 git clone https://github.com/chota-org/justdial-api.git
 cd justdial-api
 
 # Install dependencies
 npm install
 
-# Run unit tests
-npm test
+# Run locally
+API_KEY=your_secret_key npm start
+```
 
-# Start development server with live reload
-npm run dev
+### Docker
+```bash
+docker build -t vyapar-leads-api .
+docker run -p 10000:10000 -e API_KEY=your_secret_key vyapar-leads-api
 ```
 
 ---
 
-## ⚖️ License
-MIT License. Created by [@chota-org](https://github.com/chota-org).
+## 📱 Mobile App Integration (Flutter)
+
+In your Flutter app (`goyim`):
+```dart
+final response = await http.get(
+  Uri.parse('https://justdial-api.onrender.com/api/search?city=$city&query=$query&source=all&limit=100'),
+  headers: {'x-api-key': apiKey},
+);
+// Each lead contains `whatsapp_link: "https://wa.me/91XXXXXXXXXX"`
+// Launch with url_launcher: launchUrl(Uri.parse(lead.whatsappLink));
+```
+
+---
+
+## 📄 License
+MIT © chota-org
