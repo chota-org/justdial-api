@@ -4,6 +4,7 @@
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
 import { getCityAreas } from '../utils/cityAreas.js';
+import { DynamicLocalityQueue } from '../utils/dynamicLocality.js';
 
 const CITY_ID_CACHE = {
   'delhi': '44', 'new delhi': '44', 'ncr': '44', 'noida': '44', 'gurgaon': '44', 'faridabad': '44', 'ghaziabad': '44',
@@ -264,15 +265,29 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
     }
   }
 
-  // Multi-area locality expansion when limit > 20 or limit=max
+  // Multi-area locality expansion with dynamic snowball discovery & fallback
   if ((isMaxLimit || allLeads.length < targetLimit) && cityId !== '0') {
-    const areas = getCityAreas(normCity);
-    const maxAreas = isMaxLimit ? Math.min(areas.length, 35) : Math.min(Math.ceil((targetLimit - allLeads.length) / 5), areas.length);
-    const areaBatchSize = 5;
+    const localityQueue = new DynamicLocalityQueue({
+      city: normCity,
+      fallbackProvider: getCityAreas,
+      maxDynamicAreas: isMaxLimit ? 80 : 35
+    });
+    // Dynamically harvest localities from page 1..N leads
+    localityQueue.queueFromListings(allLeads);
 
-    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+    const maxAreas = isMaxLimit ? 50 : Math.min(Math.ceil((targetLimit - allLeads.length) / 5), 30);
+    const areaBatchSize = 5;
+    let areasExplored = 0;
+
+    while (localityQueue.hasMore() && areasExplored < maxAreas) {
       if (!isMaxLimit && allLeads.length >= targetLimit) break;
-      const chunk = areas.slice(i, i + areaBatchSize);
+      const chunk = [];
+      for (let b = 0; b < areaBatchSize && localityQueue.hasMore() && (areasExplored + chunk.length) < maxAreas; b++) {
+        const nextA = localityQueue.nextArea();
+        if (nextA) chunk.push(nextA);
+      }
+      if (chunk.length === 0) break;
+      areasExplored += chunk.length;
 
       const chunkResults = await Promise.all(chunk.map(async areaName => {
         try {
@@ -283,6 +298,7 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
       }));
 
       for (const leads of chunkResults) {
+        localityQueue.queueFromListings(leads); // Snowball discovery from area results
         for (const lead of leads) {
           const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
           const nameKey = lead.name.toLowerCase();
@@ -299,7 +315,7 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
         if (!isMaxLimit && allLeads.length >= targetLimit) break;
       }
 
-      if (i + areaBatchSize < maxAreas) {
+      if (areasExplored < maxAreas) {
         await new Promise(r => setTimeout(r, 60));
       }
     }

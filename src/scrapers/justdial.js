@@ -9,6 +9,7 @@
 import { ProxyAgent } from 'undici';
 import { sanitizeQuery, normalizeCity, cleanPhone as cleanPhoneNumber, cleanEmail, slugify } from '../utils/normalizer.js';
 import { getCityAreas } from '../utils/cityAreas.js';
+import { DynamicLocalityQueue } from '../utils/dynamicLocality.js';
 import { getPopularCategory } from '../utils/categories.js';
 
 const USER_AGENTS = [
@@ -600,28 +601,11 @@ export async function searchJustdial(options = {}) {
 
   // 4. Exhaustive Multi-Area Harvesting Mode when limit > 50 or limit === 'max'
   if (isMaxLimit || maxLimit > 50) {
-    const initialAreas = getCityAreas(resolution.city || city);
-    const seenAreaSlugs = new Set(initialAreas.map(a => slugify(a)));
-    const areas = [...initialAreas];
-
-    const queueArea = (rawArea) => {
-      if (!rawArea) return;
-      const clean = String(rawArea).replace(/[^\w\s-]/g, '').trim();
-      if (!clean) return;
-      const s = slugify(clean);
-      if (s && s.length >= 3 && !seenAreaSlugs.has(s)) {
-        seenAreaSlugs.add(s);
-        areas.push(clean);
-      }
-      const words = clean.split(/\s+/);
-      if (words.length >= 3) {
-        const sub = slugify(words.slice(-2).join(' '));
-        if (sub && sub.length >= 3 && !seenAreaSlugs.has(sub)) {
-          seenAreaSlugs.add(sub);
-          areas.push(words.slice(-2).join(' '));
-        }
-      }
-    };
+    const localityQueue = new DynamicLocalityQueue({
+      city: resolution.city || city,
+      fallbackProvider: getCityAreas,
+      maxDynamicAreas: isMaxLimit ? 150 : 60
+    });
 
     const collectedDocids = new Set();
     const directLeads = [];
@@ -631,13 +615,14 @@ export async function searchJustdial(options = {}) {
       const basePage = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, 1, proxy);
       if (basePage.total > totalAvailable) totalAvailable = basePage.total;
       for (const lead of basePage.listings) {
-        queueArea(lead.area);
+        localityQueue.queueArea(lead.area);
         const key = lead.docid || lead.phone || lead.name;
         if (!seenKeys.has(key)) {
           seenKeys.add(key);
           directLeads.push(lead);
         }
       }
+      localityQueue.queueFromListings(basePage.listings);
       if (basePage.nextdocid) {
         basePage.nextdocid.split(',').filter(Boolean).forEach(id => {
           const cleanId = id.replace(/\./g, '-');
@@ -646,12 +631,21 @@ export async function searchJustdial(options = {}) {
       }
     } catch (e) {}
 
-    // Concurrently harvest area endpoints to canvas the metropolitan area
+    // Concurrently harvest area endpoints dynamically (snowball traversal)
     const areaBatchSize = 6;
-    const maxAreasToCanvas = isMaxLimit ? 80 : 35;
-    for (let i = 0; i < areas.length && i < maxAreasToCanvas; i += areaBatchSize) {
-      if (!isMaxLimit && collectedDocids.size >= Math.max(maxLimit * 2.5, 300)) break;
-      const areaChunk = areas.slice(i, i + areaBatchSize);
+    const maxAreasToCanvas = isMaxLimit ? 100 : 40;
+    let areasCanvassed = 0;
+
+    while (localityQueue.hasMore() && areasCanvassed < maxAreasToCanvas) {
+      if (!isMaxLimit && (directLeads.length + collectedDocids.size) >= Math.max(maxLimit * 2.5, 300)) break;
+      const areaChunk = [];
+      for (let b = 0; b < areaBatchSize && localityQueue.hasMore() && (areasCanvassed + areaChunk.length) < maxAreasToCanvas; b++) {
+        const nextA = localityQueue.nextArea();
+        if (nextA) areaChunk.push(nextA);
+      }
+      if (areaChunk.length === 0) break;
+      areasCanvassed += areaChunk.length;
+
       await Promise.all(areaChunk.map(async areaName => {
         try {
           const areaSlug = slugify(areaName);
@@ -668,6 +662,9 @@ export async function searchJustdial(options = {}) {
           if (!res.ok) return;
 
           const html = await res.text();
+          // Harvest locality links/facets from HTML
+          localityQueue.queueFromHtml(html);
+
           const nextData = extractNextData(html);
           if (!nextData) return;
 
@@ -694,7 +691,7 @@ export async function searchJustdial(options = {}) {
               const rawPhone = getCol(row, 'VNumber');
               const phone = cleanPhoneNumber(rawPhone);
               const rowArea = getCol(row, 'area');
-              if (rowArea) queueArea(rowArea);
+              if (rowArea) localityQueue.queueArea(rowArea);
               const key = cleanDocid || (phone ? `p:${phone}` : null) || (name ? `n:${slugify(name)}` : null);
               if (key && !seenKeys.has(key)) {
                 seenKeys.add(key);
@@ -788,7 +785,9 @@ export async function searchJustdial(options = {}) {
         search: resolution.search,
         ncatid: resolution.ncatid,
         mode: 'multi_area_exhaustive',
-        areas_canvassed: areas.length,
+        areas_canvassed: areasCanvassed,
+        dynamic_areas_discovered: localityQueue.stats().dynamicallyDiscovered,
+        fallback_used: localityQueue.stats().fallbackUsed,
         limit: isMaxLimit ? 'max' : maxLimit
       },
       meta: {

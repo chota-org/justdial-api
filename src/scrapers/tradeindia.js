@@ -3,6 +3,7 @@
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail } from '../utils/normalizer.js';
 import { getCityAreas } from '../utils/cityAreas.js';
+import { DynamicLocalityQueue } from '../utils/dynamicLocality.js';
 
 export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
   const normCity = normalizeCity(city);
@@ -152,15 +153,29 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
     }
   }
 
-  // Multi-area locality expansion if target limit not met or limit=max
+  // Multi-area locality expansion with dynamic snowball discovery & fallback
   if (isMaxLimit || allLeads.length < targetLimit) {
-    const areas = getCityAreas(normCity);
-    const maxAreas = isMaxLimit ? Math.min(areas.length, 25) : Math.min(Math.ceil((targetLimit - allLeads.length) / 10), areas.length);
-    const areaBatchSize = 4;
+    const localityQueue = new DynamicLocalityQueue({
+      city: normCity,
+      fallbackProvider: getCityAreas,
+      maxDynamicAreas: isMaxLimit ? 80 : 30
+    });
+    // Dynamically harvest localities from page 1..N leads
+    localityQueue.queueFromListings(allLeads);
 
-    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+    const maxAreas = isMaxLimit ? 35 : Math.min(Math.ceil((targetLimit - allLeads.length) / 10), 20);
+    const areaBatchSize = 4;
+    let areasExplored = 0;
+
+    while (localityQueue.hasMore() && areasExplored < maxAreas) {
       if (!isMaxLimit && allLeads.length >= targetLimit) break;
-      const chunk = areas.slice(i, i + areaBatchSize);
+      const chunk = [];
+      for (let b = 0; b < areaBatchSize && localityQueue.hasMore() && (areasExplored + chunk.length) < maxAreas; b++) {
+        const nextA = localityQueue.nextArea();
+        if (nextA) chunk.push(nextA);
+      }
+      if (chunk.length === 0) break;
+      areasExplored += chunk.length;
 
       const chunkResults = await Promise.all(chunk.map(async areaName => {
         try {
@@ -176,6 +191,7 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
       }));
 
       for (const leads of chunkResults) {
+        localityQueue.queueFromListings(leads); // Snowball discovery from area results
         for (const lead of leads) {
           const nameKey = lead.name.toLowerCase();
           if (seenNames.has(nameKey)) continue;
@@ -187,7 +203,7 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
         if (!isMaxLimit && allLeads.length >= targetLimit) break;
       }
 
-      if (i + areaBatchSize < maxAreas) {
+      if (areasExplored < maxAreas) {
         await new Promise(r => setTimeout(r, 80));
       }
     }

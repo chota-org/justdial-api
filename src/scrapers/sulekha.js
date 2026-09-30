@@ -4,6 +4,7 @@
 
 import { sanitizeQuery, normalizeCity, cleanPhone, cleanEmail, slugify } from '../utils/normalizer.js';
 import { getCityAreas } from '../utils/cityAreas.js';
+import { DynamicLocalityQueue } from '../utils/dynamicLocality.js';
 
 /**
  * Native Search: Queries Sulekha's search service to find exact canonical category URLs
@@ -248,7 +249,7 @@ export async function searchSulekha(options = {}) {
     }
   }
 
-  // 2. Exhaustive Multi-Area Locality Expansion (when limit > 20 or limit === 'max')
+  // 2. Exhaustive Multi-Area Locality Expansion with dynamic snowball discovery & fallback
   if ((isMaxLimit || allLeads.length < targetLimit) && categoryUrls.length > 0) {
     let catSlug = '';
     try {
@@ -259,13 +260,27 @@ export async function searchSulekha(options = {}) {
     }
     if (!catSlug) catSlug = slugify(cleanQ || query);
 
-    const areas = getCityAreas(normCity);
-    const areaBatchSize = 5;
-    const maxAreas = isMaxLimit ? Math.min(areas.length, 40) : Math.min(Math.ceil((targetLimit - allLeads.length) / 8), areas.length);
+    const localityQueue = new DynamicLocalityQueue({
+      city: normCity,
+      fallbackProvider: getCityAreas,
+      maxDynamicAreas: isMaxLimit ? 80 : 35
+    });
+    // Dynamically harvest localities from page 1..N leads
+    localityQueue.queueFromListings(allLeads);
 
-    for (let i = 0; i < maxAreas; i += areaBatchSize) {
+    const areaBatchSize = 5;
+    const maxAreas = isMaxLimit ? 45 : Math.min(Math.ceil((targetLimit - allLeads.length) / 8), 30);
+    let areasExplored = 0;
+
+    while (localityQueue.hasMore() && areasExplored < maxAreas) {
       if (!isMaxLimit && allLeads.length >= targetLimit) break;
-      const chunk = areas.slice(i, i + areaBatchSize);
+      const chunk = [];
+      for (let b = 0; b < areaBatchSize && localityQueue.hasMore() && (areasExplored + chunk.length) < maxAreas; b++) {
+        const nextA = localityQueue.nextArea();
+        if (nextA) chunk.push(nextA);
+      }
+      if (chunk.length === 0) break;
+      areasExplored += chunk.length;
 
       const chunkResults = await Promise.all(chunk.map(async areaName => {
         const areaSlug = slugify(areaName);
@@ -278,6 +293,7 @@ export async function searchSulekha(options = {}) {
       }));
 
       for (const leads of chunkResults) {
+        localityQueue.queueFromListings(leads); // Snowball discovery from area results
         for (const lead of leads) {
           const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
           const nameKey = lead.name.toLowerCase();
@@ -294,7 +310,7 @@ export async function searchSulekha(options = {}) {
         if (!isMaxLimit && allLeads.length >= targetLimit) break;
       }
 
-      if (i + areaBatchSize < maxAreas) {
+      if (areasExplored < maxAreas) {
         await new Promise(r => setTimeout(r, 80));
       }
     }
