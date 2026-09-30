@@ -246,9 +246,10 @@ export async function searchJustdial(options = {}) {
   const {
     city,
     query,
-    pages = 3,
-    limit = 50,
-    delayMs = 400,
+    page = null,
+    pages = null,
+    limit = null,
+    delayMs = 250,
     proxy = null
   } = options;
 
@@ -256,16 +257,37 @@ export async function searchJustdial(options = {}) {
     throw new Error('Both "city" and "query" parameters are required.');
   }
 
-  const maxPages = Math.min(Math.max(1, parseInt(pages, 10) || 1), 10);
-  const maxLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), 200);
+  // 1. Determine requested lead limit (default: 50, max: 200)
+  const maxLimit = limit ? Math.min(Math.max(1, parseInt(limit, 10) || 50), 200) : 50;
+
+  // 2. Determine starting page (default: 1)
+  const startPage = page ? Math.max(1, parseInt(page, 10) || 1) : 1;
+
+  // 3. Determine how many pages to iterate:
+  // If limit is specified (e.g. limit=100), ensure enough pages are fetched (10 listings/page)
+  let totalPagesToFetch;
+  if (pages) {
+    const requestedPages = Math.max(1, parseInt(pages, 10) || 1);
+    const pagesNeededForLimit = Math.ceil(maxLimit / 10);
+    totalPagesToFetch = Math.max(requestedPages, pagesNeededForLimit);
+  } else if (limit) {
+    totalPagesToFetch = Math.ceil(maxLimit / 10);
+  } else {
+    totalPagesToFetch = 3;
+  }
+
+  // Cap at 20 pages max per request (up to 200 leads)
+  totalPagesToFetch = Math.min(totalPagesToFetch, 20);
+  const endPage = startPage + totalPagesToFetch - 1;
 
   if (process.env.RELAY_URL && !options._relayed && !proxy) {
     try {
       const relayParams = new URLSearchParams({
         city,
         query,
-        ...(pages && { pages }),
-        ...(limit && { limit })
+        ...(page && { page }),
+        pages: totalPagesToFetch,
+        limit: maxLimit
       });
       const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/search?${relayParams.toString()}`;
       const relayResp = await fetch(relayUrl, {
@@ -273,7 +295,7 @@ export async function searchJustdial(options = {}) {
           'ngrok-skip-browser-warning': 'true',
           'User-Agent': 'Justdial-API-Gateway/1.0'
         },
-        signal: AbortSignal.timeout(45000)
+        signal: AbortSignal.timeout(60000)
       });
       if (relayResp.ok) {
         const json = await relayResp.json();
@@ -299,11 +321,13 @@ export async function searchJustdial(options = {}) {
   const allLeads = [];
   const seenIds = new Set();
   let totalAvailable = 0;
+  let pagesFetched = 0;
 
-  // 2. Fetch pages
-  for (let p = 1; p <= maxPages; p++) {
+  // 2. Fetch pages starting from startPage up to endPage
+  for (let p = startPage; p <= endPage; p++) {
     try {
       const pageData = await fetchNctPage(resolution.city, resolution.search, resolution.ncatid, p, proxy);
+      pagesFetched++;
       if (pageData.total > totalAvailable) {
         totalAvailable = pageData.total;
       }
@@ -322,7 +346,7 @@ export async function searchJustdial(options = {}) {
       }
 
       if (allLeads.length >= maxLimit) break;
-      if (p < maxPages && delayMs > 0) {
+      if (p < endPage && delayMs > 0) {
         await sleep(delayMs);
       }
     } catch (err) {
@@ -338,14 +362,16 @@ export async function searchJustdial(options = {}) {
       city: resolution.city,
       search: resolution.search,
       ncatid: resolution.ncatid,
-      pages_requested: maxPages,
+      start_page: startPage,
+      end_page: startPage + pagesFetched - 1,
+      pages_fetched: pagesFetched,
       limit: maxLimit
     },
     meta: {
       total_available: totalAvailable,
       count: allLeads.length,
-      with_phone_count: allLeads.filter(l => l.phone).length,
-      with_whatsapp_count: allLeads.filter(l => l.whatsapp).length
+      with_phone_count: allLeads.filter(l => !!l.phone).length,
+      with_whatsapp_count: allLeads.filter(l => !!l.whatsapp).length
     },
     results: allLeads
   };

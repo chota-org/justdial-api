@@ -81,12 +81,13 @@ app.get('/', (req, res) => {
         path: '/api/search',
         params: {
           city: 'Required. City name (e.g. Mumbai, Delhi, Bangalore)',
-          query: 'Required. Category or business keyword (e.g. Caterers, Solar-Panel-Dealers)',
-          pages: 'Optional. Number of pages to scrape (1 to 10, default: 3)',
-          limit: 'Optional. Maximum leads to return (1 to 200, default: 50)',
-          proxy: 'Optional. HTTP/HTTPS/SOCKS5 proxy URL for datacenter unblocking (e.g. http://user:pass@host:port)'
+          query: 'Required. Category or business keyword (e.g. Caterers, pet-shop)',
+          page: 'Optional. Specific page number to scrape (e.g. 1, 2, 3)',
+          pages: 'Optional. Total number of pages to iterate (1 to 20, default: auto-calculated from limit)',
+          limit: 'Optional. Maximum leads to return (1 to 200, default: 50. Automatically fetches enough pages)',
+          proxy: 'Optional. HTTP/HTTPS/SOCKS5 proxy URL for datacenter unblocking'
         },
-        example: '/api/search?city=Mumbai&query=Solar-Panel-Dealers&pages=2'
+        example: '/api/search?city=Delhi&query=pet-shop&limit=100'
       },
       export_csv: {
         method: 'GET',
@@ -94,10 +95,12 @@ app.get('/', (req, res) => {
         params: {
           city: 'Required. City name',
           query: 'Required. Category or business keyword',
-          pages: 'Optional. Number of pages (default: 3)',
+          page: 'Optional. Starting page number',
+          pages: 'Optional. Total number of pages to iterate',
+          limit: 'Optional. Maximum leads to return (1 to 200. Automatically fetches enough pages for limit)',
           proxy: 'Optional. Proxy URL'
         },
-        example: '/api/export/csv?city=Delhi&query=Caterers&pages=2'
+        example: '/api/export/csv?city=Delhi&query=pet-shop&limit=100'
       },
       resolve: {
         method: 'GET',
@@ -201,7 +204,7 @@ app.get('/api/debug', async (req, res) => {
 
 // Primary Search API endpoint
 app.get('/api/search', async (req, res) => {
-  const { city, query, pages, limit, proxy, relay } = req.query;
+  const { city, query, page, pages, limit, proxy, relay } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -217,6 +220,7 @@ app.get('/api/search', async (req, res) => {
       const relayParams = new URLSearchParams({
         city,
         query,
+        ...(page && { page }),
         ...(pages && { pages }),
         ...(limit && { limit }),
         ...(proxy && { proxy })
@@ -227,7 +231,7 @@ app.get('/api/search', async (req, res) => {
           'ngrok-skip-browser-warning': 'true',
           'User-Agent': 'Justdial-API-Gateway/1.0'
         },
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(60000)
       });
       const data = await relayResp.json();
       return res.status(relayResp.status).json(data);
@@ -241,6 +245,7 @@ app.get('/api/search', async (req, res) => {
     const result = await searchJustdial({
       city,
       query,
+      page,
       pages,
       limit,
       proxy,
@@ -261,7 +266,7 @@ app.get('/api/search', async (req, res) => {
 
 // Export directly as CSV download
 app.get('/api/export/csv', async (req, res) => {
-  const { city, query, pages, limit, proxy } = req.query;
+  const { city, query, page, pages, limit, proxy } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
@@ -275,8 +280,9 @@ app.get('/api/export/csv', async (req, res) => {
     const { results } = await searchJustdial({
       city,
       query,
-      pages: pages || 3,
-      limit: limit || 100,
+      page,
+      pages,
+      limit,
       proxy,
       _relayed: isRelayed
     });
