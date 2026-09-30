@@ -44,34 +44,7 @@ export async function resolveSulekhaCategoryUrls(city, query) {
 /**
  * Extracts leads from a specific Sulekha category page
  */
-export async function scrapeSulekhaUrl(targetUrl, { relay, _relayed } = {}) {
-  // If running in cloud and relay is configured, route via Indian relay to bypass Azure/IIS 403 block
-  const activeRelay = relay || process.env.RELAY_URL;
-  if (activeRelay && !_relayed) {
-    try {
-      const relayParams = new URLSearchParams({
-        url: targetUrl
-      });
-      const relayUrl = `${activeRelay.replace(/\/+$/, '')}/api/debug?${relayParams.toString()}`;
-      const relayResp = await fetch(relayUrl, {
-        headers: {
-          'ngrok-skip-browser-warning': 'true',
-          'User-Agent': 'Vyapar-API-Gateway/1.0'
-        },
-        signal: AbortSignal.timeout(20000)
-      });
-      if (relayResp.ok) {
-        const debugData = await relayResp.json();
-        if (debugData.status === 200) {
-          // Parse HTML returned by relay
-          return parseSulekhaHtml(debugData.bodyPreview || '', targetUrl);
-        }
-      }
-    } catch (relayErr) {
-      console.warn(`[Sulekha] Relay request failed: ${relayErr.message}`);
-    }
-  }
-
+export async function scrapeSulekhaUrl(targetUrl) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -152,6 +125,34 @@ export async function searchSulekha({ city, query, limit = 50, relay, _relayed }
   const cleanQ = sanitizeQuery(query, city);
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
+  // If running in cloud and relay is configured, delegate search to Indian residential relay
+  const activeRelay = relay || process.env.RELAY_URL;
+  if (activeRelay && !_relayed) {
+    try {
+      const relayParams = new URLSearchParams({
+        city: normCity,
+        query: cleanQ,
+        limit: targetLimit
+      });
+      const relayUrl = `${activeRelay.replace(/\/+$/, '')}/api/sulekha/search?${relayParams.toString()}`;
+      const relayResp = await fetch(relayUrl, {
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'User-Agent': 'Vyapar-API-Gateway/1.0'
+        },
+        signal: AbortSignal.timeout(35000)
+      });
+      if (relayResp.ok) {
+        const json = await relayResp.json();
+        if (json.success && Array.isArray(json.results)) {
+          return json.results;
+        }
+      }
+    } catch (relayErr) {
+      console.warn(`[Sulekha] Relay search failed: ${relayErr.message}. Falling back to direct.`);
+    }
+  }
+
   // 1. Resolve exact category URLs using native search API
   const categoryUrls = await resolveSulekhaCategoryUrls(normCity, cleanQ);
 
@@ -161,7 +162,7 @@ export async function searchSulekha({ city, query, limit = 50, relay, _relayed }
 
   for (const catUrl of categoryUrls) {
     try {
-      const leads = await scrapeSulekhaUrl(catUrl, { relay, _relayed });
+      const leads = await scrapeSulekhaUrl(catUrl);
 
       for (const lead of leads) {
         const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
