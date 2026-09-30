@@ -151,24 +151,34 @@ curl "http://localhost:10000/api/search?city=Delhi&query=Caterers"
 
 ---
 
-## ☁️ Deploy to Render
+## 🛡️ Geo-Bypass: Proxy & Relay Architecture
 
-### Option A: Using Render CLI
+Justdial uses Akamai Bot Manager at its edge perimeter, which blocks direct requests originating from foreign cloud datacenter IP ranges (AWS, GCP, Render US/SG) with HTTP 403 Forbidden.
+
+This API includes native, dual-mode architectural support to run globally without blocks:
+
+### 1. Upstream Proxy Support (`PROXY_URL` or `?proxy=`)
+Configure any residential, datacenter, or mobile proxy (HTTP, HTTPS, or SOCKS5):
 ```bash
-render services create \
-  --name justdial-api \
-  --type web_service \
-  --repo https://github.com/chota-org/justdial-api \
-  --runtime docker \
-  --plan free \
-  --region oregon \
-  --confirm
-```
+# In environment variable
+export PROXY_URL="http://user:pass@proxy-server.com:port"
 
-### Option B: Using Render Blueprint (`render.yaml`)
-1. In the Render Dashboard, click **Blueprints** → **New Blueprint Instance**.
-2. Connect `https://github.com/chota-org/justdial-api`.
-3. Render automatically reads `render.yaml` and provisions the Docker service with zero configuration.
+# Or on a per-request basis
+curl "https://justdial-api.onrender.com/api/search?city=Mumbai&query=Caterers&proxy=http://proxy-server:port"
+```
+The scraper automatically utilizes `undici.ProxyAgent` with connection pooling.
+
+### 2. Transparent Multi-Region Relay (`RELAY_URL` or `?relay=`)
+When deployed to overseas cloud datacenters (like Render in Oregon or Singapore), the service can automatically route queries through an Indian bridge or local tunnel:
+```bash
+# Set in Render service environment
+RELAY_URL="https://your-indian-relay.example.com"
+```
+When `RELAY_URL` is configured:
+1. Render receives the request at `https://justdial-api.onrender.com`.
+2. Render transparently forwards the request to the Indian relay.
+3. The Indian relay executes the fast browserless SSR scrape directly from an Indian egress IP.
+4. Clean JSON leads are returned back to the caller in ~2 seconds.
 
 ---
 
