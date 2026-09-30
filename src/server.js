@@ -105,6 +105,51 @@ app.get('/api/resolve', async (req, res) => {
   }
 });
 
+// Diagnostic / Debug endpoint to inspect upstream responses from Render
+app.get('/api/debug', async (req, res) => {
+  const targetUrl = req.query.url || 'https://www.justdial.com/Mumbai/Solar-Panel-Dealers';
+  const ua = req.query.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+  
+  const headers = {
+    'User-Agent': ua,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': req.query.lang || 'en-US,en;q=0.9',
+    'Referer': req.query.referer || 'https://www.google.com/',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
+  };
+
+  if (req.query.sec === '1') {
+    headers['sec-ch-ua'] = '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"';
+    headers['sec-ch-ua-mobile'] = '?0';
+    headers['sec-ch-ua-platform'] = '"Windows"';
+    headers['sec-fetch-dest'] = 'document';
+    headers['sec-fetch-mode'] = 'navigate';
+    headers['sec-fetch-site'] = 'none';
+    headers['sec-fetch-user'] = '?1';
+    headers['upgrade-insecure-requests'] = '1';
+  }
+
+  try {
+    const resp = await fetch(targetUrl, { headers });
+    const respHeaders = {};
+    for (const [k, v] of resp.headers.entries()) {
+      respHeaders[k] = v;
+    }
+    const body = await resp.text();
+    res.json({
+      url: targetUrl,
+      status: resp.status,
+      statusText: resp.statusText,
+      headers: respHeaders,
+      bodyPreview: body.slice(0, 1500)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+
 // Primary Search API endpoint
 app.get('/api/search', async (req, res) => {
   const { city, query, pages, limit, proxy } = req.query;
