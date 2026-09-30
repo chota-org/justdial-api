@@ -1,10 +1,15 @@
 // TradeIndia Scraper: High-density B2B suppliers, manufacturers and exporters
 // Extracts Next.js SSR state (__NEXT_DATA__) with 28 listings per page.
 
+import { sanitizeQuery, normalizeCity } from '../utils/normalizer.js';
+
 export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+
   const params = new URLSearchParams({
-    keyword: query.trim(),
-    ...(city && { city: city.trim() }),
+    keyword: cleanQ || query.trim(),
+    ...(normCity && { city: normCity }),
     ...(page > 1 && { page: String(page) })
   });
 
@@ -18,6 +23,7 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
 
   const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
   if (!resp.ok) {
+    if (resp.status === 404) return { source: 'tradeindia', city: normCity, query: cleanQ, page, count: 0, leads: [] };
     throw new Error(`TradeIndia returned HTTP ${resp.status}`);
   }
 
@@ -26,7 +32,7 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
 
   const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (!nextDataMatch) {
-    return { source: 'tradeindia', city, query, page, count: 0, leads: [] };
+    return { source: 'tradeindia', city: normCity, query: cleanQ, page, count: 0, leads: [] };
   }
 
   try {
@@ -37,7 +43,7 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
       const name = (item.co_name || item.initial_co_name || '').trim();
       if (!name) continue;
 
-      const itemCity = item.city || city || '';
+      const itemCity = item.city || normCity || '';
       const state = item.state || '';
       const country = item.country_name || 'India';
       const address = [itemCity, state, country].filter(Boolean).join(', ');
@@ -63,7 +69,7 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
         verified: !!(item.has_trust_stamp || item.platinum_seller || item.super_seller || item.ifpaid),
         business_type: item.business_type || '',
         member_since_years: item.member_since || null,
-        categories: [query, item.product_name].filter(Boolean),
+        categories: [cleanQ || query, item.product_name].filter(Boolean),
         url: profileUrl
       });
     }
@@ -73,8 +79,8 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
 
   return {
     source: 'tradeindia',
-    city,
-    query,
+    city: normCity,
+    query: cleanQ,
     page,
     count: leads.length,
     leads
@@ -82,15 +88,17 @@ export async function scrapeTradeIndiaPage({ query, city = '', page = 1 }) {
 }
 
 export async function searchTradeIndia({ city = '', query, page, pages, limit = 50 }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
   if (page !== undefined && page !== null && page !== '') {
     const singlePage = Math.max(parseInt(page, 10) || 1, 1);
-    const { leads } = await scrapeTradeIndiaPage({ city, query, page: singlePage });
+    const { leads } = await scrapeTradeIndiaPage({ city: normCity, query: cleanQ, page: singlePage });
     return {
       source: 'tradeindia',
-      city,
-      query,
+      city: normCity,
+      query: cleanQ,
       page: singlePage,
       total_results: leads.length,
       results: leads.slice(0, targetLimit)
@@ -107,19 +115,21 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
 
   for (let p = 1; p <= neededPages; p++) {
     try {
-      const { leads } = await scrapeTradeIndiaPage({ city, query, page: p });
+      const { leads } = await scrapeTradeIndiaPage({ city: normCity, query: cleanQ, page: p });
       if (leads.length === 0) break;
 
+      let newLeadsInPage = 0;
       for (const lead of leads) {
         const nameKey = lead.name.toLowerCase();
         if (seenNames.has(nameKey)) continue;
         seenNames.add(nameKey);
 
         allLeads.push(lead);
+        newLeadsInPage++;
         if (allLeads.length >= targetLimit) break;
       }
 
-      if (allLeads.length >= targetLimit) break;
+      if (newLeadsInPage === 0 || allLeads.length >= targetLimit) break;
     } catch (err) {
       console.warn(`[TradeIndia] Page ${p} error: ${err.message}`);
       break;
@@ -128,8 +138,8 @@ export async function searchTradeIndia({ city = '', query, page, pages, limit = 
 
   return {
     source: 'tradeindia',
-    city,
-    query,
+    city: normCity,
+    query: cleanQ,
     total_pages_fetched: neededPages,
     total_results: allLeads.length,
     results: allLeads

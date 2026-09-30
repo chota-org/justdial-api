@@ -1,19 +1,15 @@
 // IndiaMART Scraper: Fast mobile web extraction of verified suppliers and phone numbers
 // Uses server-rendered mobile cards on m.indiamart.com with direct unmasked seller contacts.
 
-function cleanPhone(raw) {
-  if (!raw) return '';
-  const digits = String(raw).replace(/[^0-9]/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
-  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
+import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
 
 export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+
   const params = new URLSearchParams({
-    s: query.trim(),
-    ...(city && { city: city.trim() }),
+    s: cleanQ || query.trim(),
+    ...(normCity && { city: normCity }),
     ...(page > 1 && { page: String(page) })
   });
 
@@ -27,6 +23,7 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
 
   const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
   if (!resp.ok) {
+    if (resp.status === 404) return { source: 'indiamart', city: normCity, query: cleanQ, page, count: 0, leads: [] };
     throw new Error(`IndiaMART returned HTTP ${resp.status}`);
   }
 
@@ -79,14 +76,14 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
       email: 'N/A',
       source: 'indiamart',
       rating: null,
-      reviews: null,
-      address: [meta, city].filter(Boolean).join(', '),
+      reviews: 0,
+      address: [meta, normCity].filter(Boolean).join(', '),
       area: meta.split('•')[0]?.trim() || '',
-      city: city || 'India',
+      city: normCity || 'India',
       pincode: '',
       website: '',
       verified: isVerified,
-      categories: [query, product].filter(Boolean),
+      categories: [cleanQ || query, product].filter(Boolean),
       price: price || null,
       url: prodUrl
     });
@@ -94,8 +91,8 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
 
   return {
     source: 'indiamart',
-    city,
-    query,
+    city: normCity,
+    query: cleanQ,
     page,
     count: leads.length,
     leads
@@ -103,15 +100,17 @@ export async function scrapeIndiaMartPage({ city = '', query, page = 1 }) {
 }
 
 export async function searchIndiaMart({ city = '', query, page, pages, limit = 50 }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
   if (page !== undefined && page !== null && page !== '') {
     const singlePage = Math.max(parseInt(page, 10) || 1, 1);
-    const { leads } = await scrapeIndiaMartPage({ city, query, page: singlePage });
+    const { leads } = await scrapeIndiaMartPage({ city: normCity, query: cleanQ, page: singlePage });
     return {
       source: 'indiamart',
-      city,
-      query,
+      city: normCity,
+      query: cleanQ,
       page: singlePage,
       total_results: leads.length,
       results: leads.slice(0, targetLimit)
@@ -129,13 +128,15 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
 
   for (let p = 1; p <= neededPages; p++) {
     try {
-      const { leads } = await scrapeIndiaMartPage({ city, query, page: p });
+      const { leads } = await scrapeIndiaMartPage({ city: normCity, query: cleanQ, page: p });
       if (leads.length === 0) break;
 
+      let newLeadsInPage = 0;
       for (const lead of leads) {
         const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
         const nameKey = lead.name.toLowerCase();
 
+        // Prevent repeated sponsored items from bloating the list
         if (phoneKey && seenPhones.has(phoneKey)) continue;
         if (nameKey && seenNames.has(nameKey)) continue;
 
@@ -143,10 +144,12 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
         if (nameKey) seenNames.add(nameKey);
 
         allLeads.push(lead);
+        newLeadsInPage++;
         if (allLeads.length >= targetLimit) break;
       }
 
-      if (allLeads.length >= targetLimit) break;
+      // If page had zero new leads (only duplicate sponsored ones), stop pagination
+      if (newLeadsInPage === 0 || allLeads.length >= targetLimit) break;
     } catch (err) {
       console.warn(`[IndiaMART] Page ${p} error: ${err.message}`);
       break;
@@ -155,8 +158,8 @@ export async function searchIndiaMart({ city = '', query, page, pages, limit = 5
 
   return {
     source: 'indiamart',
-    city,
-    query,
+    city: normCity,
+    query: cleanQ,
     total_pages_fetched: neededPages,
     total_results: allLeads.length,
     results: allLeads

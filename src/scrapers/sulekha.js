@@ -1,48 +1,74 @@
-// Sulekha Scraper: Local service businesses with direct phone numbers and ratings
-// Extracts Schema.org ItemList JSON-LD from Sulekha directory pages.
+// Sulekha Scraper: High-precision local service lead extraction
+// Uses Sulekha's native search API (azsearch.sulekha.com) to resolve canonical category slugs
+// and extracts Schema.org ItemList JSON-LD with unmasked phone numbers and physical addresses.
 
-function cleanPhone(raw) {
-  if (!raw) return '';
-  const digits = String(raw).replace(/[^0-9]/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
-  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
+import { sanitizeQuery, normalizeCity, cleanPhone, slugify } from '../utils/normalizer.js';
 
-export async function scrapeSulekhaPage({ city, query, relay, _relayed }) {
-  // Normalize category: e.g. "caterers" -> "catering-services", "packers and movers" -> "packers-and-movers"
-  let catSlug = query.trim().toLowerCase().replace(/[\s_]+/g, '-');
-  if (catSlug === 'caterers' || catSlug === 'caterer') {
-    catSlug = 'catering-services';
+/**
+ * Native Search: Queries Sulekha's search service to find exact canonical category URLs
+ */
+export async function resolveSulekhaCategoryUrls(city, query) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+
+  try {
+    const searchUrl = `https://azsearch.sulekha.com/api/search/home-common-search-v2?cityName=${encodeURIComponent(normCity)}&query=${encodeURIComponent(cleanQ)}&wt=json`;
+    const resp = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      const urls = (data.result || [])
+        .map(r => r.url)
+        .filter(u => typeof u === 'string' && u.startsWith('http'));
+
+      if (urls.length > 0) {
+        return [...new Set(urls)];
+      }
+    }
+  } catch (err) {
+    console.warn(`[Sulekha] Native search resolve error: ${err.message}`);
   }
 
-  const citySlug = city.trim().toLowerCase().replace(/[\s_]+/g, '-');
-  const targetUrl = `https://www.sulekha.com/${catSlug}/${citySlug}`;
+  // Fallback: Construct standard category slug
+  const fallbackCat = slugify(cleanQ || query);
+  const fallbackCity = slugify(normCity);
+  return [`https://www.sulekha.com/${fallbackCat}/${fallbackCity}`];
+}
 
-  // If running in cloud and relay is configured, route via Indian relay
+/**
+ * Extracts leads from a specific Sulekha category page
+ */
+export async function scrapeSulekhaUrl(targetUrl, { relay, _relayed } = {}) {
+  // If running in cloud and relay is configured, route via Indian relay to bypass Azure/IIS 403 block
   const activeRelay = relay || process.env.RELAY_URL;
   if (activeRelay && !_relayed) {
     try {
       const relayParams = new URLSearchParams({
-        source: 'sulekha',
-        city,
-        query
+        url: targetUrl
       });
-      const relayUrl = `${activeRelay.replace(/\/+$/, '')}/api/sulekha/search?${relayParams.toString()}`;
+      const relayUrl = `${activeRelay.replace(/\/+$/, '')}/api/debug?${relayParams.toString()}`;
       const relayResp = await fetch(relayUrl, {
         headers: {
           'ngrok-skip-browser-warning': 'true',
           'User-Agent': 'Vyapar-API-Gateway/1.0'
         },
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(20000)
       });
       if (relayResp.ok) {
-        const data = await relayResp.json();
-        return data.results || [];
+        const debugData = await relayResp.json();
+        if (debugData.status === 200) {
+          // Parse HTML returned by relay
+          return parseSulekhaHtml(debugData.bodyPreview || '', targetUrl);
+        }
       }
     } catch (relayErr) {
-      console.warn(`[Sulekha] Relay request failed: ${relayErr.message}. Attempting direct fetch.`);
+      console.warn(`[Sulekha] Relay request failed: ${relayErr.message}`);
     }
   }
 
@@ -54,12 +80,18 @@ export async function scrapeSulekhaPage({ city, query, relay, _relayed }) {
 
   const resp = await fetch(targetUrl, { headers, signal: AbortSignal.timeout(15000) });
   if (!resp.ok) {
+    if (resp.status === 404) {
+      return []; // Return clean empty array on 404
+    }
     throw new Error(`Sulekha returned HTTP ${resp.status}`);
   }
 
   const html = await resp.text();
-  const leads = [];
+  return parseSulekhaHtml(html, targetUrl);
+}
 
+function parseSulekhaHtml(html, targetUrl) {
+  const leads = [];
   const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let scriptMatch;
 
@@ -90,14 +122,14 @@ export async function scrapeSulekhaPage({ city, query, relay, _relayed }) {
               email: 'N/A',
               source: 'sulekha',
               rating: null,
-              reviews: null,
+              reviews: 0,
               address: fullAddress,
               area: locality,
-              city: region || city,
+              city: region,
               pincode: postal,
               website: '',
               verified: true,
-              categories: [query],
+              categories: [item.name],
               description: item.description || '',
               url: item.url || targetUrl
             });
@@ -105,33 +137,58 @@ export async function scrapeSulekhaPage({ city, query, relay, _relayed }) {
         }
       }
     } catch {
-      // Ignore JSON parse errors in irrelevant scripts
+      // Ignore JSON parse errors in non-target scripts
     }
   }
 
   return leads;
 }
 
-export async function searchSulekha({ city, query, relay, limit = 50, _relayed }) {
+/**
+ * High-level Sulekha search with native taxonomy resolution, sub-category pagination, and deduplication
+ */
+export async function searchSulekha({ city, query, limit = 50, relay, _relayed }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
-  try {
-    const leads = await scrapeSulekhaPage({ city, query, relay, _relayed });
-    return {
-      source: 'sulekha',
-      city,
-      query,
-      total_results: leads.length,
-      results: leads.slice(0, targetLimit)
-    };
-  } catch (err) {
-    console.warn(`[Sulekha] Search error: ${err.message}`);
-    return {
-      source: 'sulekha',
-      city,
-      query,
-      total_results: 0,
-      results: []
-    };
+  // 1. Resolve exact category URLs using native search API
+  const categoryUrls = await resolveSulekhaCategoryUrls(normCity, cleanQ);
+
+  const allLeads = [];
+  const seenPhones = new Set();
+  const seenNames = new Set();
+
+  for (const catUrl of categoryUrls) {
+    try {
+      const leads = await scrapeSulekhaUrl(catUrl, { relay, _relayed });
+
+      for (const lead of leads) {
+        const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
+        const nameKey = lead.name.toLowerCase();
+
+        if (phoneKey && seenPhones.has(phoneKey)) continue;
+        if (nameKey && seenNames.has(nameKey)) continue;
+
+        if (phoneKey) seenPhones.add(phoneKey);
+        if (nameKey) seenNames.add(nameKey);
+
+        allLeads.push(lead);
+        if (allLeads.length >= targetLimit) break;
+      }
+
+      if (allLeads.length >= targetLimit) break;
+    } catch (err) {
+      console.warn(`[Sulekha] Error scraping ${catUrl}: ${err.message}`);
+    }
   }
+
+  return {
+    source: 'sulekha',
+    city: normCity,
+    query: cleanQ,
+    resolved_categories: categoryUrls,
+    total_results: allLeads.length,
+    results: allLeads
+  };
 }

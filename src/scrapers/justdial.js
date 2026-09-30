@@ -6,6 +6,7 @@
  */
 
 import { ProxyAgent } from 'undici';
+import { sanitizeQuery, normalizeCity, cleanPhone as cleanPhoneNumber, slugify } from '../utils/normalizer.js';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -28,14 +29,6 @@ function getHeaders() {
     'Cache-Control': 'no-cache',
     'Pragma': 'no-cache'
   };
-}
-
-function slugify(text) {
-  return text
-    .trim()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 function sleep(ms) {
@@ -75,31 +68,50 @@ function extractNextData(html) {
 /**
  * Clean phone number: converts 09845239283 to 9845239283 or validates 10 digits
  */
-function cleanPhoneNumber(rawPhone) {
-  if (!rawPhone || typeof rawPhone !== 'string') return null;
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length === 11 && digits.startsWith('0')) {
-    return digits.substring(1);
+async function fetchCategoryMetadata(citySlug, querySlug, proxyUrl = null) {
+  const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(querySlug)}`;
+  const dispatcher = getDispatcher(proxyUrl);
+
+  const fetchOptions = {
+    headers: getHeaders(),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000)
+  };
+  if (dispatcher) {
+    fetchOptions.dispatcher = dispatcher;
   }
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return digits.substring(2);
+
+  const res = await fetch(url, fetchOptions);
+  if (!res.ok) {
+    return null;
   }
-  if (digits.length === 10) {
-    return digits;
-  }
-  return digits.length > 0 ? digits : null;
+
+  const html = await res.text();
+  const nextData = extractNextData(html);
+  if (!nextData) return null;
+
+  const pp = nextData.props?.pageProps || {};
+  return {
+    city: pp.ct || citySlug,
+    search: pp.search || querySlug,
+    ncatid: pp.ncatid || pp.query?.ncatid || null,
+    national_catid: pp.query?.ncatid || (pp.ncatid ? `nct-${pp.ncatid}` : null),
+    area: pp.resultsAreaInfo?.area || '',
+    buildId: nextData.buildId || ''
+  };
 }
 
 /**
  * Step 1: Resolves category query to canonical search term and ncatid
  */
 export async function resolveCategory(city, query, proxyUrl = null) {
-  const citySlug = slugify(city);
-  const querySlug = slugify(query);
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+  const citySlug = slugify(normCity);
 
   if (process.env.RELAY_URL && !proxyUrl) {
     try {
-      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/resolve?city=${encodeURIComponent(city)}&query=${encodeURIComponent(query)}`;
+      const relayUrl = `${process.env.RELAY_URL.replace(/\/+$/, '')}/api/resolve?city=${encodeURIComponent(normCity)}&query=${encodeURIComponent(cleanQ)}`;
       const relayResp = await fetch(relayUrl, {
         headers: { 'ngrok-skip-browser-warning': 'true' },
         signal: AbortSignal.timeout(15000)
@@ -115,36 +127,35 @@ export async function resolveCategory(city, query, proxyUrl = null) {
     }
   }
 
-  const url = `https://www.justdial.com/${encodeURIComponent(citySlug)}/${encodeURIComponent(querySlug)}`;
-  const dispatcher = getDispatcher(proxyUrl);
+  // Candidate slugs to test in order of relevance
+  const candidates = [
+    slugify(cleanQ),
+    slugify(query),
+    `${slugify(cleanQ)}s`,
+    `${slugify(cleanQ)}-dealers`,
+    `${slugify(cleanQ)}-services`
+  ];
 
-  const fetchOptions = {
-    headers: getHeaders(),
-    redirect: 'follow'
-  };
-  if (dispatcher) {
-    fetchOptions.dispatcher = dispatcher;
+  for (const candidate of [...new Set(candidates)]) {
+    if (!candidate) continue;
+    try {
+      const meta = await fetchCategoryMetadata(citySlug, candidate, proxyUrl);
+      if (meta && meta.ncatid) {
+        return meta;
+      }
+    } catch (err) {
+      console.warn(`[Justdial] Candidate ${candidate} failed: ${err.message}`);
+    }
   }
 
-  const res = await fetch(url, fetchOptions);
-  if (!res.ok) {
-    throw new Error(`Failed to resolve category at ${url} (HTTP ${res.status}). If running in a datacenter (like AWS/Render US), configure a residential or Indian proxy via PROXY_URL.`);
-  }
-
-  const html = await res.text();
-  const nextData = extractNextData(html);
-  if (!nextData) {
-    throw new Error(`Failed to parse Next.js metadata from ${url}`);
-  }
-
-  const pp = nextData.props?.pageProps || {};
+  // Fallback: return default slug even if ncatid is null
   return {
-    city: pp.ct || citySlug,
-    search: pp.search || querySlug,
-    ncatid: pp.ncatid || null,
-    national_catid: pp.query?.ncatid || null,
-    area: pp.resultsAreaInfo?.area || '',
-    buildId: nextData.buildId || ''
+    city: citySlug,
+    search: slugify(cleanQ || query),
+    ncatid: null,
+    national_catid: null,
+    area: '',
+    buildId: ''
   };
 }
 

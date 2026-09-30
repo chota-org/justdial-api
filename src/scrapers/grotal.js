@@ -1,8 +1,11 @@
-// Grotal Scraper: High-speed local business lead extraction with unmasked phone numbers
-// Uses schema.org LocalBusiness JSON-LD embedded on Grotal search pages.
+// Grotal Scraper: High-precision local business lead extraction with unmasked phone numbers
+// Uses Grotal's native AutoSuggest API (SearchAutoSuggest.ashx) to resolve canonical category taxonomy
+// and extracts Schema.org LocalBusiness JSON-LD with unmasked phone numbers and physical addresses.
+
+import { sanitizeQuery, normalizeCity, cleanPhone, slugify } from '../utils/normalizer.js';
 
 const CITY_ID_CACHE = {
-  'delhi': '44', 'new delhi': '44', 'noida': '44', 'gurgaon': '44', 'faridabad': '44', 'ghaziabad': '44',
+  'delhi': '44', 'new delhi': '44', 'ncr': '44', 'noida': '44', 'gurgaon': '44', 'faridabad': '44', 'ghaziabad': '44',
   'mumbai': '45', 'navi mumbai': '45', 'thane': '45',
   'kolkata': '46',
   'chennai': '47',
@@ -62,7 +65,7 @@ const CITY_ID_CACHE = {
 };
 
 async function getCityId(city) {
-  const normalized = city.trim().toLowerCase();
+  const normalized = normalizeCity(city);
   if (CITY_ID_CACHE[normalized]) {
     return CITY_ID_CACHE[normalized];
   }
@@ -85,21 +88,36 @@ async function getCityId(city) {
   }
 }
 
-function cleanPhone(raw) {
-  if (!raw) return '';
-  const digits = String(raw).replace(/[^0-9]/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
-  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-  return digits.length >= 10 ? digits.slice(-10) : digits;
+/**
+ * Native Search: Queries Grotal's AutoSuggest API to find exact canonical category slugs
+ */
+export async function resolveGrotalSlugs(query, cityId) {
+  try {
+    const url = `https://www.grotal.com/js/SearchAutoSuggest.ashx?txt=${encodeURIComponent(query)}&city=${cityId}&area=0&Country=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (res.ok) {
+      const text = await res.text();
+      const suggestions = [...text.matchAll(/GetTxt\("([^"]+)"/g)].map(m => m[1]);
+      if (suggestions.length > 0) {
+        return suggestions;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Grotal] AutoSuggest resolve error: ${err.message}`);
+  }
+
+  // Fallback to formatted slug
+  const fallback = query.trim().replace(/[\s_]+/g, '-');
+  return [fallback];
 }
 
-export async function scrapeGrotalPage({ city, query, page = 1 }) {
-  const cityId = await getCityId(city);
-  const formattedCity = city.charAt(0).toUpperCase() + city.slice(1).toLowerCase();
-  const slug = query.trim().replace(/[\s_]+/g, '-');
-
-  // URL pattern: https://www.grotal.com/{City}/{Query}-C{cityId}A0P{page}A0/
+/**
+ * Scrapes a single page for a given slug on Grotal
+ */
+export async function scrapeGrotalPage({ formattedCity, cityId, slug, page = 1 }) {
   const url = cityId !== '0'
     ? `https://www.grotal.com/${formattedCity}/${slug}-C${cityId}A0P${page}A0/`
     : `https://www.grotal.com/India/${slug}-0A0P${page}/`;
@@ -112,13 +130,16 @@ export async function scrapeGrotalPage({ city, query, page = 1 }) {
 
   const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
   if (!resp.ok) {
-    throw new Error(`Grotal returned HTTP ${resp.status}`);
+    return []; // Return empty on non-200 / 404
   }
 
   const html = await resp.text();
-  const leads = [];
+  // Check if Grotal returned an internal ASP.NET FileNotFound
+  if (html.includes('FileNotFound.aspx') || html.includes('The resource cannot be found')) {
+    return [];
+  }
 
-  // Parse schema.org JSON-LD
+  const leads = [];
   const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let scriptMatch;
 
@@ -133,7 +154,7 @@ export async function scrapeGrotalPage({ city, query, page = 1 }) {
           const phone = cleanPhone(rawPhone);
           const addr = item.address || {};
           const street = addr.streetAddress || '';
-          const locality = addr.addressLocality || city;
+          const locality = addr.addressLocality || formattedCity;
           const region = addr.addressRegion || '';
           const postal = addr.postalCode || '';
           const fullAddress = [street, locality, region, postal].filter(Boolean).join(', ');
@@ -146,44 +167,49 @@ export async function scrapeGrotalPage({ city, query, page = 1 }) {
             email: 'N/A',
             source: 'grotal',
             rating: null,
-            reviews: null,
+            reviews: 0,
             address: fullAddress,
             area: street,
             city: locality,
             pincode: postal,
             website: '',
             verified: true,
-            categories: [query],
+            categories: [slug.replace(/-/g, ' ')],
             url: item.url || url
           });
         }
       }
     } catch {
-      // Ignore JSON parse errors in non-target script tags
+      // Ignore JSON parse errors in non-target scripts
     }
   }
 
-  return {
-    source: 'grotal',
-    city,
-    query,
-    page,
-    count: leads.length,
-    leads
-  };
+  return leads;
 }
 
+/**
+ * High-level search: Resolves canonical taxonomy via native search, paginates, and handles edge cases
+ */
 export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
+  const cityId = await getCityId(normCity);
+  const formattedCity = normCity.charAt(0).toUpperCase() + normCity.slice(1).toLowerCase();
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
-  // If a specific single page is requested
+  // 1. Resolve canonical slugs using Grotal's native AutoSuggest API
+  const slugs = await resolveGrotalSlugs(cleanQ, cityId);
+  const primarySlug = slugs[0];
+
+  // Specific single page requested
   if (page !== undefined && page !== null && page !== '') {
     const singlePage = Math.max(parseInt(page, 10) || 1, 1);
-    const { leads } = await scrapeGrotalPage({ city, query, page: singlePage });
+    const leads = await scrapeGrotalPage({ formattedCity, cityId, slug: primarySlug, page: singlePage });
     return {
       source: 'grotal',
-      city,
-      query,
+      city: normCity,
+      query: cleanQ,
+      resolved_slug: primarySlug,
       page: singlePage,
       total_results: leads.length,
       results: leads.slice(0, targetLimit)
@@ -191,7 +217,7 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
   }
 
   // Auto-pagination: 20 leads per page
-  const neededPages = pages 
+  const maxPagesToFetch = pages
     ? Math.min(Math.max(parseInt(pages, 10) || 1, 1), 10)
     : Math.min(Math.ceil(targetLimit / 20), 10);
 
@@ -199,10 +225,10 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
   const seenPhones = new Set();
   const seenNames = new Set();
 
-  for (let p = 1; p <= neededPages; p++) {
+  for (let p = 1; p <= maxPagesToFetch; p++) {
     try {
-      const { leads } = await scrapeGrotalPage({ city, query, page: p });
-      if (leads.length === 0) break;
+      const leads = await scrapeGrotalPage({ formattedCity, cityId, slug: primarySlug, page: p });
+      if (leads.length === 0) break; // Reached end of category
 
       for (const lead of leads) {
         const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
@@ -225,11 +251,38 @@ export async function searchGrotal({ city, query, page, pages, limit = 50 }) {
     }
   }
 
+  // If primary slug yielded fewer leads than requested and other subcategories exist, fetch from next subcategory
+  if (allLeads.length < targetLimit && slugs.length > 1) {
+    for (let i = 1; i < Math.min(slugs.length, 3); i++) {
+      const altSlug = slugs[i];
+      try {
+        const leads = await scrapeGrotalPage({ formattedCity, cityId, slug: altSlug, page: 1 });
+        for (const lead of leads) {
+          const phoneKey = lead.phone ? lead.phone.toLowerCase() : null;
+          const nameKey = lead.name.toLowerCase();
+
+          if (phoneKey && seenPhones.has(phoneKey)) continue;
+          if (nameKey && seenNames.has(nameKey)) continue;
+
+          if (phoneKey) seenPhones.add(phoneKey);
+          if (nameKey) seenNames.add(nameKey);
+
+          allLeads.push(lead);
+          if (allLeads.length >= targetLimit) break;
+        }
+        if (allLeads.length >= targetLimit) break;
+      } catch (err) {
+        console.warn(`[Grotal] Alt slug error: ${err.message}`);
+      }
+    }
+  }
+
   return {
     source: 'grotal',
-    city,
-    query,
-    total_pages_fetched: neededPages,
+    city: normCity,
+    query: cleanQ,
+    resolved_slug: primarySlug,
+    total_pages_fetched: maxPagesToFetch,
     total_results: allLeads.length,
     results: allLeads
   };

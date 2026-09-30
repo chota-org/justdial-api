@@ -55,17 +55,7 @@ export const SOURCES = {
   }
 };
 
-/**
- * Clean and normalize 10-digit Indian phone number
- */
-function cleanPhone(raw) {
-  if (!raw) return '';
-  const digits = String(raw).replace(/[^0-9]/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
-  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
-  return digits.length >= 10 ? digits.slice(-10) : digits;
-}
+import { sanitizeQuery, normalizeCity, cleanPhone } from '../utils/normalizer.js';
 
 /**
  * Execute search for a single designated source
@@ -116,6 +106,8 @@ export async function searchAllSources(options = {}) {
     throw new Error('Both "city" and "query" parameters are required.');
   }
 
+  const normCity = normalizeCity(city);
+  const cleanQ = sanitizeQuery(query, city);
   const targetLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
   // Parse requested source list
@@ -139,8 +131,8 @@ export async function searchAllSources(options = {}) {
   const sourceLimit = Math.ceil(targetLimit * 1.2 / validSources.length);
   const tasks = validSources.map(src => {
     return searchSingleSource(src, {
-      city,
-      query,
+      city: normCity,
+      query: cleanQ,
       limit: sourceLimit,
       page,
       pages,
@@ -249,8 +241,9 @@ export async function searchAllSources(options = {}) {
   const finalResults = mergedLeads.slice(0, targetLimit);
 
   return {
-    city,
-    query,
+    city: normCity,
+    query: cleanQ,
+    original_query: query,
     requested_sources: validSources,
     sources_status: sourceStats,
     total_deduplicated: finalResults.length,
