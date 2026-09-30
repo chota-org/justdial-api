@@ -596,4 +596,45 @@ When using the Vyapar Leads API for automated or semi-automated digital marketin
 1. **Avoid Zero-Interval Automation:** Do not spam high-frequency messages through unofficial web sockets on fresh WhatsApp accounts.
 2. **Utilize Native App Intents:** Launching via `whatsapp://send?phone=91...&text=...` opens the official WhatsApp application installed on Android or iOS. This utilizes the user's authentic session and is 100% free with zero risk of API account suspension.
 3. **Deduplication:** Always use the returned 10-digit `phone` as a unique primary key in your local database (SQLite/Isar/Postgres) to avoid messaging the same merchant multiple times across different directory campaigns.
-4. **Stagger Outgoing Batches:** For high-volume campaigns (e.g. 500+ merchants), send messages in staggered batches of 20-30 contacts with random 10-45 second pauses between dispatches.
+4. **Stagger Outgoing Batches:** For high-volume campaigns (e.g. 500+ merchants), send messages in staggered batches of 20-30 contacts with random 10-45 second pauses between dispatches. 
+---
+
+## 9. Relevancy Engine: Native Search & Category Slug Resolution
+
+A core engineering hurdle in scraping commercial directories is that natural language queries (e.g. `"best wedding caterers near me in delhi"`) fail if a scraper blindly builds arbitrary URLs or guesses category slugs. 
+
+To maintain 100% result relevancy, the Vyapar Leads engine uses a two-tier resolution architecture:
+
+### 9.1 Query Sanitizer & City Normalizer
+Before querying any platform, incoming search requests pass through normalization pipelines:
+- **Canonical City Aliasing:** Standardizes common Indian vernacular city names and twin cities (e.g., `Bengaluru` → `Bangalore`, `Bombay` → `Mumbai`, `Gurugram` → `Gurgaon`, `Calcutta` → `Kolkata`, `Madras` → `Chennai`).
+- **Modifier Stripping:** Automatically removes non-taxonomic search baggage such as `"best"`, `"top"`, `"cheap"`, `"emergency"`, `"near me"`, `"nearby"`, `"dealers in"`, `"services in"`, and repetitive city mentions.
+- **Hyphen & Slugs Formatting:** Formats cleansed tokens for directory URL compatibility.
+
+### 9.2 Directory Native Search & Dorking Resolvers
+
+1. **Sulekha Native AutoSuggest API:**
+   - **Endpoint:** `https://azsearch.sulekha.com/api/search/home-common-search-v2?cityName={city}&query={query}&wt=json`
+   - Bypasses raw search scraping by directly consulting Sulekha's internal Solr/Elastic search index.
+   - Extracts verified category URLs (e.g. `wedding-catering-services/delhi`) with category IDs (`catid`).
+   - If `limit > 20`, queries matched subcategories to deliver deep, deduplicated pagination.
+
+2. **Grotal Internal AutoSuggest Endpoint:**
+   - **Endpoint:** `https://www.grotal.com/js/SearchAutoSuggest.ashx?txt={query}&city={cityId}&area=0&Country=1`
+   - Resolves arbitrary keywords to Grotal's exact category slug (e.g., `solar panel` → `Solar-Panels`).
+   - Paginates via Grotal's alphanumeric URL routing (`P1A0`, `P2A0`, etc.).
+   - Gracefully detects ASP.NET boundaries (e.g. `FileNotFound.aspx` or zero business card blocks).
+
+3. **Justdial Multi-Candidate NCT Resolver:**
+   - Resolves keywords against Justdial's National Category Taxonomy (`ncatid`).
+   - Evaluates multiple candidate variants (`{cleanQ}`, `{cleanQ}s`, `{cleanQ}-dealers`, `{cleanQ}-services`) to prevent `ncatid: null` failures.
+   - Paginates via `page-1`, `page-2` query routes with instant deduplication by `docid` and `phone`.
+
+4. **IndiaMART Free-form Search:**
+   - Targets `https://m.indiamart.com/isearch.php?s={query}&cq={city}&page={page}`.
+   - Extracts direct seller contact cards and filters out repeated sponsored cards across pages.
+
+5. **TradeIndia SSR Next.js Hydration:**
+   - Ingests `https://www.tradeindia.com/search.html?keyword={query}&city={city}&page={page}`.
+   - Extracts structured SSR `__NEXT_DATA__` JSON with GST, website, and business profiles.
+
