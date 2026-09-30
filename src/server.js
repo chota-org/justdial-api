@@ -77,7 +77,8 @@ app.get('/health', (req, res) => {
     status: 'ok',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    proxy_configured: !!(process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY)
+    proxy_configured: !!(process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
+    relay_configured: !!process.env.RELAY_URL
   });
 });
 
@@ -152,13 +153,39 @@ app.get('/api/debug', async (req, res) => {
 
 // Primary Search API endpoint
 app.get('/api/search', async (req, res) => {
-  const { city, query, pages, limit, proxy } = req.query;
+  const { city, query, pages, limit, proxy, relay } = req.query;
 
   if (!city || !query) {
     return res.status(400).json({
       success: false,
       error: 'Missing required query parameters: "city" and "query". Example: /api/search?city=Mumbai&query=Caterers'
     });
+  }
+
+  // Support upstream Indian relay for cloud instances
+  const targetRelay = relay || process.env.RELAY_URL;
+  if (targetRelay) {
+    try {
+      const relayParams = new URLSearchParams({
+        city,
+        query,
+        ...(pages && { pages }),
+        ...(limit && { limit }),
+        ...(proxy && { proxy })
+      });
+      const relayUrl = `${targetRelay.replace(/\/+$/, '')}/api/search?${relayParams.toString()}`;
+      const relayResp = await fetch(relayUrl, {
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'User-Agent': 'Justdial-API-Gateway/1.0'
+        },
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await relayResp.json();
+      return res.status(relayResp.status).json(data);
+    } catch (relayErr) {
+      console.warn(`[Relay Failed]: ${relayErr.message}. Falling back to direct scraper.`);
+    }
   }
 
   try {
