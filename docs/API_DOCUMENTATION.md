@@ -182,9 +182,9 @@ Returns capabilities, data formats, unmasking reliability, and connection modes 
     {
       "id": "tradeindia",
       "name": "TradeIndia",
-      "description": "Major B2B directory with verified manufacturers, exporters, private domain websites, and GST details",
-      "unmasked_phones": false,
-      "whatsapp_ready": false,
+      "description": "Major B2B directory with verified manufacturers, exporters, direct mobile contacts, and GST details",
+      "unmasked_phones": true,
+      "whatsapp_ready": true,
       "requires_relay": false,
       "rate_safe": true
     },
@@ -219,6 +219,10 @@ The primary lead generation endpoint. Queries either all platforms simultaneousl
 | `limit` | `number` | No | `50` | Maximum deduplicated leads to return (1 to 200). Auto-paginates upstream pages to fulfill requested quota. |
 | `page` | `number` | No | `1` | Specific single page number to fetch (disables auto-pagination). |
 | `pages` | `number` | No | Auto | Explicit number of pages to iterate per platform (1 to 10). |
+| `has_phone` | `boolean` | No | `false` | When `true`, filters results to only return leads with a verified 10-digit phone number. |
+| `has_whatsapp` | `boolean` | No | `false` | When `true`, filters results to only return leads with WhatsApp capability. |
+| `verified` | `boolean` | No | `false` | When `true`, returns only verified/TrustSEAL merchants. |
+| `min_rating` | `number` | No | — | Minimum customer review score filter (e.g. `4.0`). |
 
 #### Request Example:
 ```bash
@@ -368,6 +372,36 @@ Resolves an arbitrary keyword in a city into Justdial's internal Canonical Natio
     "national_catid": "nct-10444071",
     "area": "",
     "buildId": "20092026"
+  }
+}
+```
+
+---
+
+### 5.7 Query Normalizer & Intent Classifier Diagnostic
+```http
+GET /api/normalize
+```
+Diagnostic endpoint that previews how the engine sanitizes an incoming query, standardizes city aliases, and classifies commercial intent (`b2b_industrial`, `local_services`, or `general`).
+
+#### Query Parameters:
+| Parameter | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `city` | `string` | No | Raw city name (e.g. `Bengaluru`, `Bombay`, `NCR`) |
+| `query` | `string` | **Yes** | Keyword or search query (e.g. `best wedding caterers near me`) |
+
+#### Response Example:
+```json
+{
+  "success": true,
+  "input": {
+    "city": "Bengaluru",
+    "query": "best wedding caterers near me"
+  },
+  "normalized": {
+    "city": "bangalore",
+    "query": "wedding caterers",
+    "intent": "local_services"
   }
 }
 ```
@@ -636,5 +670,25 @@ Before querying any platform, incoming search requests pass through normalizatio
 
 5. **TradeIndia SSR Next.js Hydration:**
    - Ingests `https://www.tradeindia.com/search.html?keyword={query}&city={city}&page={page}`.
-   - Extracts structured SSR `__NEXT_DATA__` JSON with GST, website, and business profiles.
+   - Extracts structured SSR `__NEXT_DATA__` JSON with direct seller mobile contacts (`display_original_mobile`), GST, website, and business profiles.
+
+---
+
+## 10. Commercial Intent Classification & Smart Source Routing
+
+To optimize discovery and guarantee that requests hit the highest-density directories first, the engine uses rule-based commercial intent detection:
+
+### 10.1 Intent Classifications:
+1. **`b2b_industrial`**:
+   - **Trigger Keywords:** `manufacturer`, `factory`, `wholesaler`, `wholesale`, `supplier`, `exporter`, `distributor`, `industrial`, `fabrication`, `machinery`, `chemical`, `polymer`, `rubber`, `steel`, `pipes`, `valves`, `pumps`, `packaging`, `bulk`, `oem`, `raw materials`.
+   - **Target Priority:** IndiaMART, TradeIndia, and Justdial.
+   - **Characteristics:** Returns company profiles, factory contacts, direct mobile lines, GST numbers, and export market details.
+
+2. **`local_services`**:
+   - **Trigger Keywords:** `caterer`, `catering`, `wedding`, `event`, `photography`, `pest control`, `interior designer`, `repair`, `mechanic`, `plumber`, `electrician`, `packers`, `movers`, `cleaning`, `salon`, `spa`, `doctor`, `clinic`, `dentist`, `hospital`, `pet shop`, `vet`, `tuition`, `coaching`.
+   - **Target Priority:** Justdial, Grotal, Sulekha.
+   - **Characteristics:** Focuses on local customer reviews, star ratings, geographic street addresses, and instant WhatsApp chat.
+
+3. **`general`**:
+   - Default balanced multi-source sweep across all available directories.
 
