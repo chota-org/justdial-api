@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
 import { searchJustdial, resolveCategory } from './scraper/justdial.js';
 
 const app = express();
@@ -10,9 +11,54 @@ const PORT = process.env.PORT || 10000;
 app.use(helmet({
   contentSecurityPolicy: false
 }));
+app.disable('x-powered-by');
 app.use(cors());
 app.use(express.json());
 app.use(morgan('combined'));
+
+// Rate Limiter: Protects against abuse, scraping loops & DoS
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute window
+  max: parseInt(process.env.RATE_LIMIT_MAX || '60', 10), // 60 requests/min default
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Rate limit exceeded: Too many requests from this IP. Please wait a minute.'
+  }
+});
+
+// API Key Authentication Middleware
+function authenticateApiKey(req, res, next) {
+  const configuredKey = process.env.API_KEY;
+  if (!configuredKey) {
+    // If no API_KEY is set in environment, allow open access
+    return next();
+  }
+
+  // Allow internal gateway communication between multi-region services
+  if (req.headers['user-agent'] === 'Justdial-API-Gateway/1.0') {
+    return next();
+  }
+
+  const providedKey = 
+    req.headers['x-api-key'] || 
+    req.query.api_key || 
+    (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
+
+  if (!providedKey || providedKey !== configuredKey) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Missing or invalid API key. Pass your key in the "x-api-key" header or "api_key" query parameter.'
+    });
+  }
+
+  next();
+}
+
+// Apply rate limiting and security auth to /api routes
+app.use('/api', apiLimiter);
+app.use('/api', authenticateApiKey);
 
 // Helper to escape CSV values
 function escapeCsv(val) {
@@ -77,6 +123,8 @@ app.get('/health', (req, res) => {
     status: 'ok',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
+    auth_required: !!process.env.API_KEY,
+    rate_limit_max: parseInt(process.env.RATE_LIMIT_MAX || '60', 10),
     proxy_configured: !!(process.env.PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
     relay_configured: !!process.env.RELAY_URL
   });
@@ -237,6 +285,8 @@ app.get('/api/export/csv', async (req, res) => {
       'Name',
       'Phone',
       'WhatsApp',
+      'WhatsApp_Link',
+      'Email',
       'Rating',
       'Reviews',
       'Address',
@@ -256,6 +306,8 @@ app.get('/api/export/csv', async (req, res) => {
       escapeCsv(item.name),
       escapeCsv(item.phone),
       escapeCsv(item.whatsapp),
+      escapeCsv(item.whatsapp_link),
+      escapeCsv(item.email || 'N/A (JD Phone Directory)'),
       escapeCsv(item.rating),
       escapeCsv(item.reviews),
       escapeCsv(item.address),

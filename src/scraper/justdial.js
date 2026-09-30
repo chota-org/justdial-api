@@ -201,7 +201,10 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
     const rawPhone = getCol(row, 'VNumber');
     const phone = cleanPhoneNumber(rawPhone);
     const rawWp = getCol(row, 'wpnumber');
-    const whatsapp = cleanPhoneNumber(Array.isArray(rawWp) ? rawWp[0] : rawWp);
+    const whatsappExplicit = cleanPhoneNumber(Array.isArray(rawWp) ? rawWp[0] : rawWp);
+    // In India, direct business mobile numbers are almost universally active on WhatsApp
+    const whatsapp = whatsappExplicit || phone;
+    const whatsappLink = whatsapp ? `https://wa.me/91${whatsapp}` : null;
     const ratingRaw = getCol(row, 'compRating');
     const reviewsRaw = getCol(row, 'totalReviews');
     const categoriesRaw = getCol(row, 'type');
@@ -212,6 +215,8 @@ export async function fetchNctPage(city, search, ncatid, page = 1, proxyUrl = nu
       phone: phone,
       raw_phone: rawPhone || '',
       whatsapp: whatsapp,
+      whatsapp_link: whatsappLink,
+      email: null, // Justdial is a telephone directory; merchant emails are not publicly published
       rating: ratingRaw ? parseFloat(ratingRaw) : null,
       reviews: reviewsRaw ? parseInt(String(reviewsRaw).replace(/\D/g, ''), 10) : 0,
       address: getCol(row, 'NewAddress') || '',
